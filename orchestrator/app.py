@@ -77,7 +77,8 @@ def message():
         reply = "Action(s) en attente de confirmation :\n" + "\n".join(
             f"- {p['summary']}" for p in pending
         )
-    db.save_exchange(user_id, text, reply)
+    if reply != agent.EMPTY_REPLY:
+        db.save_exchange(user_id, text, reply)
 
     return jsonify(reply=reply, pending=pending)
 
