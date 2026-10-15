@@ -1,0 +1,72 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - fox_net
+
+  orchestrator:
+    build: ./orchestrator
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_MODEL: ${GEMINI_MODEL:?définir GEMINI_MODEL dans .env}
+      GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-}
+      HISTORY_LIMIT: ${HISTORY_LIMIT:-10}
+      MAX_CALLS_PER_DAY: ${MAX_CALLS_PER_DAY:-200}
+      MAX_TOKENS_PER_DAY: ${MAX_TOKENS_PER_DAY:-500000}
+      ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID}
+      TIMEZONE: ${TIMEZONE:-Africa/Douala}
+      PENDING_TTL_MINUTES: ${PENDING_TTL_MINUTES:-10}
+      LLM_MAX_ATTEMPTS: ${LLM_MAX_ATTEMPTS:-4}
+      LLM_RETRY_BUDGET_SECONDS: ${LLM_RETRY_BUDGET_SECONDS:-40}
+      LLM_BACKOFF_BASE: ${LLM_BACKOFF_BASE:-1.0}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-20}
+      UNDO_WINDOW_MINUTES: ${UNDO_WINDOW_MINUTES:-60}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - fox_net
+
+  telegram_bot:
+    build: ./telegram_bot
+    restart: unless-stopped
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      TELEGRAM_ALLOWED_USER_ID: ${TELEGRAM_ALLOWED_USER_ID}
+      ORCHESTRATOR_URL: http://orchestrator:5000
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - fox_net
+
+networks:
+  fox_net:
+
+volumes:
+  pgdata:

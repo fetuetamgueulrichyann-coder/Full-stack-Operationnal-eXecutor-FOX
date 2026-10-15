@@ -1,0 +1,3 @@
+ALTER TABLE pending_actions ADD COLUMN IF NOT EXISTS result      JSONB;
+ALTER TABLE pending_actions ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+ALTER TABLE pending_actions ADD COLUMN IF NOT EXISTS undone_at   TIMESTAMPTZ;
