@@ -88,6 +88,20 @@ def is_temporary(exc):
     return isinstance(exc, httpx.TransportError)
 
 
+def is_daily_quota(exc):
+    return (
+        isinstance(exc, errors.APIError)
+        and exc.code == 429
+        and "PerDay" in str(exc)
+    )
+
+
+def short(exc, limit=160):
+    """Version courte d'une erreur pour les journaux."""
+    text = " ".join(str(exc).split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def _call_with_retry(model, contents, config):
     started = time.monotonic()
     for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
@@ -96,16 +110,20 @@ def _call_with_retry(model, contents, config):
                 model=model, contents=contents, config=config
             )
         except Exception as exc:
+            if is_daily_quota(exc):
+                # Quota gratuit du jour épuisé : réessayer ne sert à rien (retour dans des heures).
+                log.warning("Quota journalier Gemini épuisé pour %s : %s", model, short(exc))
+                raise LLMUnavailable(str(exc)) from exc
             if not is_temporary(exc):
                 raise
             delay = LLM_BACKOFF_BASE * 2 ** (attempt - 1) + random.uniform(0, 0.5)
             elapsed = time.monotonic() - started
             if attempt == LLM_MAX_ATTEMPTS or elapsed + delay > LLM_RETRY_BUDGET_SECONDS:
-                log.error("Gemini indisponible après %d tentative(s) : %s", attempt, exc)
+                log.error("Gemini indisponible après %d tentative(s) : %s", attempt, short(exc))
                 raise LLMUnavailable(str(exc)) from exc
             log.warning(
                 "Gemini indisponible [%s] (%s), tentative %d/%d, nouvel essai dans %.1f s",
-                model, exc, attempt, LLM_MAX_ATTEMPTS, delay,
+                model, short(exc), attempt, LLM_MAX_ATTEMPTS, delay,
             )
             time.sleep(delay)
 
