@@ -1,6 +1,6 @@
 # FOX
 
-Services : `db` (PostgreSQL), `orchestrator` (Flask), `telegram_bot`.
+Services : `db` (PostgreSQL), `orchestrator` (Flask), `telegram_bot`. Documentation des évolutions : `docs/`.
 
 ## Lancement
 
@@ -9,13 +9,78 @@ Services : `db` (PostgreSQL), `orchestrator` (Flask), `telegram_bot`.
     docker compose up -d --build
     docker compose logs -f
 
-Les scripts de `db/init/` ne s'exécutent qu'à la création du volume.
-Pour appliquer le schéma sur une base déjà créée :
+Le fichier `.env` contient les secrets : il n'est jamais enregistré dans Git
+et ne se partage pas. `.env.example` n'en contient aucun.
 
-    docker compose exec -T db psql -U fox -d fox < db/init/002_actions_audit.sql
-    docker compose exec -T db psql -U fox -d fox < db/init/003_undo.sql
+## Base de données, migrations et sauvegardes
 
-Pour repartir de zéro : `docker compose down -v` puis relancer.
+Le schéma de départ (`db/init/`, scripts 001 à 003) est créé une seule fois, à
+la création du volume. Toute évolution passe ensuite par des **migrations
+numérotées** (`db/migrations/004_*.sql`, `005_*.sql`...), appliquées
+automatiquement au démarrage de l'orchestrateur par `orchestrator/migrate.py` :
+
+- chaque migration s'exécute dans une transaction et n'est enregistrée
+  (table `schema_migrations`) qu'une fois réussie ;
+- une migration déjà appliquée ne peut pas être modifiée (somme de contrôle) ;
+- une opération destructive (`DROP TABLE`, `DROP COLUMN`, `TRUNCATE`,
+  `DELETE FROM`, changement de type) est **refusée par défaut** ; les règles
+  d'approbation sont dans `db/migrations/README.md`.
+
+Voir l'état : `docker compose exec orchestrator python migrate.py --status`.
+
+**Sauvegarde avant toute mise à jour importante** (fichiers dans `backups/`,
+14 exemplaires conservés) :
+
+    .\scripts\backup.ps1        # Windows (PowerShell)
+    ./scripts/backup.sh          # Linux / macOS
+
+    .\scripts\upgrade.ps1       # sauvegarde, puis reconstruit et redémarre
+    ./scripts/upgrade.sh
+
+Restauration (remplace le contenu actuel de la base, après une sauvegarde de
+sécurité automatique et une confirmation « OUI ») :
+
+    .\scripts\restore.ps1 fox_20261017_090000.dump
+    ./scripts/restore.sh fox_20261017_090000.dump
+
+`docker compose down -v` **supprime toutes les données** : ne l'utiliser
+qu'après une sauvegarde copiée hors du dossier du projet.
+
+## Tests
+
+Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils
+ne touchent jamais à la base de FOX et n'appellent ni Gemini, ni Groq, ni Google.
+
+    docker compose --profile test run --rm tests
+
+Ils couvrent : tentatives automatiques et erreurs Gemini, secours Groq,
+confirmation, refus, expiration et annulation des actions, plafonds, API Flask,
+migrations et scripts de sauvegarde.
+
+## Fournisseurs IA
+
+- **Gemini** (principal) : erreurs 429, 500, 502, 503 et 504 réessayées avec des
+  délais progressifs (`LLM_MAX_ATTEMPTS`, `LLM_RETRY_BUDGET_SECONDS`), puis
+  erreur contrôlée (HTTP 503) affichée clairement dans Telegram.
+- **Groq** (secours gratuit, conversation seule, sans outils) : utilisé
+  seulement au premier tour d'une conversation. L'agenda ne passe jamais par Groq.
+  Les modèles Groq changent : `docker compose exec orchestrator python check_models.py`
+  vérifie que `GROQ_MODEL` existe encore sur ton compte.
+
+Conditions vérifiées le 17/10/2026 (susceptibles d'évoluer, à relire avant
+d'ouvrir FOX à des testeurs) :
+
+| | Gemini gratuit | Groq |
+|---|---|---|
+| Usage des contenus | utilisés pour améliorer les produits Google, relecture humaine possible | pas d'entraînement sur les entrées et sorties (contrat de service, section 4.2) |
+| Conservation | non précisée dans les conditions lues | aucune par défaut ; journalisation possible jusqu'à 30 jours pour la fiabilité ou les abus ; option « Zero Data Retention » à activer dans la console |
+| Données sensibles | à ne pas soumettre | non précisé hors données de santé |
+| Âge | 18 ans minimum | 18 ans minimum |
+| Zone | niveau gratuit non autorisé pour les clients accessibles depuis l'EEE, la Suisse et le Royaume-Uni | pas de restriction trouvée ; entité contractante britannique pour l'EEE et la Suisse |
+| Quota gratuit | selon le modèle | limites **partagées par tout le compte** : pour `openai/gpt-oss-20b`, 30 requêtes/min, 1 000/jour, 8 000 tokens/min, 200 000 tokens/jour |
+
+Conséquence : le quota Groq est commun à tous les testeurs et très serré. Les
+limites par utilisateur de la phase suivante devront en tenir compte.
 
 ## Agenda Google (outils de FOX)
 

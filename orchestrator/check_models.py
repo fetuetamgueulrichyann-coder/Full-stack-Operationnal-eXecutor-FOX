@@ -4,12 +4,18 @@ Usage (dans le conteneur) :
     python check_models.py                      # modèle configuré + deux modèles Flash-Lite
     python check_models.py gemini-3.8-flash     # un modèle précis
 
+Le secours Groq est aussi vérifié si GROQ_API_KEY est défini : le modèle configuré (GROQ_MODEL)
+doit figurer dans la liste de ceux que ton compte peut utiliser, et répondre à une question simple.
+La clé n'est jamais affichée.
+
 Chaque modèle reçoit 2 requêtes : une question simple, puis une question qui doit
 déclencher un outil (function calling), comme dans FOX.
 """
 import os
 import sys
 import time
+
+import httpx
 
 from google import genai
 from google.genai import errors, types
@@ -76,3 +82,48 @@ for model in MODELS:
         names = [c.name for c in (response.function_calls or [])]
         verdict = "outil appelé " + ", ".join(names) if names else "aucun appel d'outil"
         print(f"   outil        : {verdict} ({seconds:.1f} s)")
+
+
+# --- Secours Groq ---------------------------------------------------------------------
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "").strip()
+GROQ_BASE = "https://api.groq.com/openai/v1"
+NON_CHAT = ("whisper", "orpheus", "guard", "safeguard", "tts")
+
+print("\n== Groq (secours)")
+if not GROQ_API_KEY:
+    print("   GROQ_API_KEY non défini : secours désactivé.")
+else:
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    try:
+        listing = httpx.get(f"{GROQ_BASE}/models", headers=headers, timeout=20)
+        listing.raise_for_status()
+        available = sorted(m["id"] for m in listing.json()["data"])
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        print(f"   liste des modèles : ERREUR {type(exc).__name__} (statut={status})")
+    else:
+        chat_models = [m for m in available if not any(word in m for word in NON_CHAT)]
+        print("   modèles de conversation disponibles :", ", ".join(chat_models) or "aucun")
+        if not GROQ_MODEL:
+            print("   GROQ_MODEL non défini : choisis-en un dans la liste ci-dessus.")
+        elif GROQ_MODEL not in available:
+            print(f"   GROQ_MODEL={GROQ_MODEL} : ABSENT de ta liste (retiré ou renommé). À remplacer.")
+        else:
+            start = time.monotonic()
+            try:
+                reply = httpx.post(
+                    f"{GROQ_BASE}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": GROQ_MODEL,
+                        "messages": [{"role": "user", "content": "Réponds uniquement par le mot OK."}],
+                    },
+                    timeout=30,
+                )
+                reply.raise_for_status()
+                text = (reply.json()["choices"][0]["message"].get("content") or "").strip()
+                print(f"   {GROQ_MODEL} : réponse reçue en {time.monotonic() - start:.1f} s -> {text[:40]!r}")
+            except Exception as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                print(f"   {GROQ_MODEL} : ERREUR {type(exc).__name__} (statut={status})")
