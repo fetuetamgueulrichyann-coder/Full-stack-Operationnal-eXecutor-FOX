@@ -20,6 +20,8 @@ log = logging.getLogger("telegram_bot")
 TOKEN = os.environ["TELEGRAM_TOKEN"]
 ORCHESTRATOR_URL = os.environ["ORCHESTRATOR_URL"]
 ALLOWED_USER_ID = int(os.environ["TELEGRAM_ALLOWED_USER_ID"])
+# Jeton partagé avec l'orchestrateur : prouve que la requête vient bien de ce bot.
+SERVICE_TOKEN = os.environ["FOX_SERVICE_TOKEN"]
 TELEGRAM_LIMIT = 4000
 UNAVAILABLE = "Service momentanément indisponible."
 
@@ -49,10 +51,16 @@ async def forward(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str)
     try:
         response = await http.post(
             f"{ORCHESTRATOR_URL}/message",
-            json={"user_id": update.effective_user.id, "text": text},
+            json={"telegram_id": update.effective_user.id, "text": text},
         )
         if response.status_code == 429:
             await message.reply_text("Limite journalière atteinte.")
+            return
+        if response.status_code in (401, 403):
+            log.error("Accès refusé par l'orchestrateur (statut %s)", response.status_code)
+            await message.reply_text(
+                "Accès refusé : ton compte FOX n'est pas autorisé ou la configuration est incorrecte."
+            )
             return
         if response.status_code == 413:
             await message.reply_text("Message trop long.")
@@ -109,7 +117,7 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         response = await http.post(
             f"{ORCHESTRATOR_URL}/actions/{action_id}/{endpoint}",
-            json={"user_id": query.from_user.id},
+            json={"telegram_id": query.from_user.id},
         )
         response.raise_for_status()
         result = response.json()["reply"]
@@ -121,7 +129,9 @@ async def on_decision(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def on_start(application: Application) -> None:
-    application.bot_data["http"] = httpx.AsyncClient(timeout=90)
+    application.bot_data["http"] = httpx.AsyncClient(
+        timeout=90, headers={"X-Fox-Service-Token": SERVICE_TOKEN}
+    )
 
 
 async def on_stop(application: Application) -> None:

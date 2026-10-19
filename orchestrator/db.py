@@ -20,9 +20,33 @@ def cursor():
 
 
 # --- Plafonds d'utilisation --------------------------------------------------
-def reserve_call(max_calls, max_tokens):
-    """Réserve un appel pour la journée (UTC). Retourne False si un plafond est atteint."""
+class QuotaExceeded(Exception):
+    """Plafond atteint. `scope` vaut « user » (plafond de l'utilisateur) ou « global »."""
+
+    def __init__(self, scope):
+        super().__init__(scope)
+        self.scope = scope
+
+
+def reserve_quota(user_id, user_calls, user_tokens, global_calls, global_tokens):
+    """Réserve un appel pour la journée (UTC) : plafond de l'utilisateur, puis plafond global.
+
+    Les deux réservations se font dans une même transaction : si l'une est refusée, rien n'est
+    compté. Lève QuotaExceeded sinon.
+    """
     with cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO user_usage (user_id, day, calls, tokens)
+            VALUES (%s, (now() AT TIME ZONE 'utc')::date, 1, 0)
+            ON CONFLICT (user_id, day) DO UPDATE SET calls = user_usage.calls + 1
+            WHERE user_usage.calls < %s AND user_usage.tokens < %s
+            RETURNING calls
+            """,
+            (user_id, user_calls, user_tokens),
+        )
+        if cur.fetchone() is None:
+            raise QuotaExceeded("user")
         cur.execute(
             """
             INSERT INTO api_usage (day, calls, tokens)
@@ -31,12 +55,14 @@ def reserve_call(max_calls, max_tokens):
             WHERE api_usage.calls < %s AND api_usage.tokens < %s
             RETURNING calls
             """,
-            (max_calls, max_tokens),
+            (global_calls, global_tokens),
         )
-        return cur.fetchone() is not None
+        if cur.fetchone() is None:
+            raise QuotaExceeded("global")
 
 
-def add_tokens(count):
+def add_tokens(user_id, count):
+    """Ajoute les tokens consommés au compteur de l'utilisateur et au compteur global."""
     with cursor() as cur:
         cur.execute(
             """
@@ -44,6 +70,40 @@ def add_tokens(count):
             WHERE day = (now() AT TIME ZONE 'utc')::date
             """,
             (count,),
+        )
+        cur.execute(
+            """
+            UPDATE user_usage SET tokens = tokens + %s
+            WHERE user_id = %s AND day = (now() AT TIME ZONE 'utc')::date
+            """,
+            (count, user_id),
+        )
+
+
+def reserve_provider(provider, max_calls, max_tokens):
+    """Réserve un appel auprès d'un fournisseur d'IA (plafond tous utilisateurs confondus)."""
+    with cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO provider_usage (provider, day, calls, tokens)
+            VALUES (%s, (now() AT TIME ZONE 'utc')::date, 1, 0)
+            ON CONFLICT (provider, day) DO UPDATE SET calls = provider_usage.calls + 1
+            WHERE provider_usage.calls < %s AND provider_usage.tokens < %s
+            RETURNING calls
+            """,
+            (provider, max_calls, max_tokens),
+        )
+        return cur.fetchone() is not None
+
+
+def add_provider_tokens(provider, count):
+    with cursor() as cur:
+        cur.execute(
+            """
+            UPDATE provider_usage SET tokens = tokens + %s
+            WHERE provider = %s AND day = (now() AT TIME ZONE 'utc')::date
+            """,
+            (count, provider),
         )
 
 

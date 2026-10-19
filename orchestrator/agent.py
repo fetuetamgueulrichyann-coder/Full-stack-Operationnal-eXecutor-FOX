@@ -24,6 +24,10 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b").strip()
 GROQ_TIMEOUT_SECONDS = int(os.environ.get("GROQ_TIMEOUT_SECONDS", "20"))
 GROQ_HISTORY_LIMIT = int(os.environ.get("GROQ_HISTORY_LIMIT", "4"))
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Plafonds journaliers (UTC) pour TOUS les utilisateurs, sous le quota gratuit de Groq
+# (par défaut 1 000 requêtes et 200 000 tokens par jour pour le compte entier).
+GROQ_MAX_CALLS_PER_DAY = int(os.environ.get("GROQ_MAX_CALLS_PER_DAY", "900"))
+GROQ_MAX_TOKENS_PER_DAY = int(os.environ.get("GROQ_MAX_TOKENS_PER_DAY", "180000"))
 
 # Taille maximale (en caractères) de chaque message d'historique renvoyé au modèle
 HISTORY_MAX_CHARS = int(os.environ.get("HISTORY_MAX_CHARS", "1200"))
@@ -79,7 +83,11 @@ client = genai.Client(
 
 
 class LLMUnavailable(Exception):
-    """Gemini reste indisponible après les nouvelles tentatives."""
+    """Le fournisseur d'IA reste indisponible après les nouvelles tentatives."""
+
+
+class ProviderQuotaExceeded(LLMUnavailable):
+    """Le plafond journalier du fournisseur gratuit (partagé par tous) est atteint."""
 
 
 def is_temporary(exc):
@@ -205,6 +213,9 @@ def propose_undo(user_id):
 # --- Secours Groq (conversation seule, sans outils) ---------------------------
 def groq_reply(user_id, text):
     """Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue aussi."""
+    if not db.reserve_provider("groq", GROQ_MAX_CALLS_PER_DAY, GROQ_MAX_TOKENS_PER_DAY):
+        log.warning("Plafond journalier Groq atteint")
+        raise ProviderQuotaExceeded("plafond Groq atteint")
     messages = [{"role": "system", "content": system_prompt(with_tools=False)}]
     for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT):
         messages.append({"role": "user", "content": user_message})
@@ -228,20 +239,27 @@ def groq_reply(user_id, text):
     if not reply:
         raise LLMUnavailable("Groq a renvoyé une réponse vide")
     tokens = (data.get("usage") or {}).get("total_tokens") or 0
+    if tokens:
+        db.add_provider_tokens("groq", tokens)
     return reply, tokens
 
 
 # --- Conversation ------------------------------------------------------------
-def system_prompt(with_tools=True):
+def exposed_tools(role):
+    """Outils que le modèle peut utiliser pour ce rôle."""
+    return [t for t in REGISTRY.values() if t.expose and t.allowed_for(role)]
+
+
+def system_prompt(with_tools=True, role="owner"):
     now = datetime.now(TZ).isoformat(timespec="minutes")
-    has_tools = with_tools and any(t.expose for t in REGISTRY.values())
+    has_tools = with_tools and bool(exposed_tools(role))
     tools_part = PROMPT_WITH_TOOLS if has_tools else PROMPT_WITHOUT_TOOLS
     return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {TZ_NAME})."
 
 
-def build_config():
-    kwargs = {"system_instruction": system_prompt()}
-    exposed = [t for t in REGISTRY.values() if t.expose]
+def build_config(role="owner"):
+    kwargs = {"system_instruction": system_prompt(role=role)}
+    exposed = exposed_tools(role)
     if exposed:
         declarations = [
             types.FunctionDeclaration(
@@ -313,10 +331,21 @@ def describe_empty(response):
     )
 
 
-def chat(user_id, text):
-    """Retourne (réponse, tokens consommés, actions en attente)."""
+def chat(user_id, text, role="owner"):
+    """Retourne (réponse, tokens consommés, actions en attente).
+
+    Routage : le propriétaire utilise Gemini (avec ses outils, secours Groq en conversation
+    seule) ; les testeurs utilisent uniquement Groq, sans outils. Aucun testeur n'est basculé
+    automatiquement vers l'offre gratuite de Gemini.
+    """
+    if role != "owner":
+        if not GROQ_API_KEY:
+            raise LLMUnavailable("aucun fournisseur disponible pour ce rôle")
+        reply, tokens = groq_reply(user_id, text)
+        return reply, tokens, []
+
     contents = build_contents(user_id, text)
-    config = build_config()
+    config = build_config(role)
     total_tokens = 0
 
     model = GEMINI_MODEL
@@ -357,8 +386,8 @@ def chat(user_id, text):
             args = dict(call.args or {})
             tool = REGISTRY.get(call.name)
 
-            if tool is None or not tool.expose:
-                db.audit(user_id, "denied", call.name, {"reason": "outil inconnu"})
+            if tool is None or not tool.expose or not tool.allowed_for(role):
+                db.audit(user_id, "denied", call.name, {"reason": "outil inconnu ou non autorisé"})
                 parts.append(error_part(call.name, "outil inconnu"))
             elif not tool.needs_confirmation:
                 parts.append(run_read_tool(user_id, tool, args))
@@ -384,7 +413,7 @@ def chat(user_id, text):
     return "Je n'ai pas pu terminer cette demande.", total_tokens, []
 
 
-def resolve_action(user_id, action_id, confirm):
+def resolve_action(user_id, action_id, confirm, role="owner"):
     """Traite le clic Confirmer / Annuler. Retourne le message à afficher."""
     if not confirm:
         row = db.cancel_pending(action_id, user_id)
@@ -405,7 +434,7 @@ def resolve_action(user_id, action_id, confirm):
     db.audit(user_id, "confirmed", tool_name, {"action_id": action_id})
     tool = REGISTRY.get(tool_name)
 
-    if tool is None:
+    if tool is None or not tool.allowed_for(role):
         db.finish_pending(action_id, "failed")
         db.audit(user_id, "failed", tool_name, {"action_id": action_id, "reason": "outil indisponible"})
         return "Cet outil n'est plus disponible."

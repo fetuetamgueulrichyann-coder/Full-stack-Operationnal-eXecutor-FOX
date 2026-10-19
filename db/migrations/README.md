@@ -3,8 +3,10 @@
 Le schéma de départ est créé par `db/init/` (001 à 003) au premier démarrage de la base.
 Toute évolution ensuite passe par un fichier numéroté ici, en continuant la numérotation :
 
-    004_ajout_utilisateurs.sql
-    005_agenda_interne.sql
+    006_agenda_interne.sql
+    007_clients_devis.sql
+
+(004 et 005, comptes et quotas, existent déjà.)
 
 Règles :
 

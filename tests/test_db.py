@@ -1,4 +1,5 @@
 """Couche base de données : plafonds, historique, actions en attente."""
+import pytest
 
 
 def usage(db):
@@ -7,17 +8,22 @@ def usage(db):
         return cur.fetchone()
 
 
-def test_plafond_d_appels(db):
-    assert db.reserve_call(2, 1000) is True
-    assert db.reserve_call(2, 1000) is True
-    assert db.reserve_call(2, 1000) is False
+def test_plafond_global_d_appels(db, make_user):
+    a, b = make_user(), make_user()
+    db.reserve_quota(a["id"], 100, 10**6, 2, 1000)
+    db.reserve_quota(b["id"], 100, 10**6, 2, 1000)
+    with pytest.raises(db.QuotaExceeded) as exc:
+        db.reserve_quota(a["id"], 100, 10**6, 2, 1000)
+    assert exc.value.scope == "global"
     assert usage(db) == (2, 0)
 
 
-def test_plafond_de_tokens(db):
-    assert db.reserve_call(100, 50) is True
-    db.add_tokens(60)
-    assert db.reserve_call(100, 50) is False
+def test_plafond_global_de_tokens(db, make_user):
+    a = make_user()
+    db.reserve_quota(a["id"], 100, 10**6, 100, 50)
+    db.add_tokens(a["id"], 60)
+    with pytest.raises(db.QuotaExceeded):
+        db.reserve_quota(a["id"], 100, 10**6, 100, 50)
 
 
 def test_historique_ordre_limite_et_separation_par_utilisateur(db):

@@ -26,6 +26,11 @@ class Tool:
     done: Optional[Callable[[Any], str]] = None
     undo: Optional[Callable[[dict, Any], None]] = None
     expose: bool = True
+    # Rôles autorisés à utiliser l'outil (vérifié à la proposition ET à l'exécution).
+    roles: tuple = ("owner", "tester")
+
+    def allowed_for(self, role) -> bool:
+        return role in self.roles
 
     @property
     def needs_confirmation(self) -> bool:
@@ -231,6 +236,9 @@ def done_creer(result):
 DATE_HELP = "Date ou date-heure ISO 8601, par exemple 2026-10-12 ou 2026-10-12T09:00"
 
 
+OWNER_ONLY = ("owner",)  # Google Calendar est l'agenda personnel du propriétaire
+
+
 def register_calendar_tools():
     register(
         Tool(
@@ -245,6 +253,7 @@ def register_calendar_tools():
                 "required": ["date_debut"],
             },
             classification=READ,
+            roles=OWNER_ONLY,
             run=lire_agenda,
         )
     )
@@ -264,6 +273,7 @@ def register_calendar_tools():
                 "required": ["titre", "debut"],
             },
             classification=WRITE,
+            roles=OWNER_ONLY,
             run=creer_evenement,
             describe=describe_creer,
             done=done_creer,
@@ -286,6 +296,7 @@ def register_calendar_tools():
                 "required": ["event_id"],
             },
             classification=WRITE,
+            roles=OWNER_ONLY,
             run=modifier_evenement,
             describe=describe_modifier,
             done=lambda result: "Événement modifié.",
@@ -304,6 +315,7 @@ def register_calendar_tools():
                 "required": ["event_id"],
             },
             classification=IRREVERSIBLE,
+            roles=OWNER_ONLY,
             run=supprimer_evenement,
             describe=describe_supprimer,
             done=lambda result: "Événement supprimé.",

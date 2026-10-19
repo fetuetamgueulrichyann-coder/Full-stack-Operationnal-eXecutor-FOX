@@ -40,6 +40,7 @@ os.environ.update(
         "LLM_BACKOFF_BASE": "0.001",
         "TIMEZONE": "Africa/Douala",
         "ALLOWED_USER_ID": "",
+        "FOX_SERVICE_TOKEN": "jeton-de-service-de-test",
     }
 )
 for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GEMINI_FALLBACK_MODEL"):
@@ -85,6 +86,9 @@ def database_url():
     name = "fox_test_" + uuid.uuid4().hex[:8]
     url = make_database(name)
     apply_init_scripts(url)
+    import migrate
+
+    migrate.run(url, DB_DIR / "migrations")  # comptes, sessions, quotas (phase A)
     os.environ["DATABASE_URL"] = url
     yield url
     # Ferme le pool de FOX avant de supprimer la base.
@@ -98,6 +102,46 @@ def db(database_url):
     import db as module
 
     return module
+
+
+@pytest.fixture(scope="session")
+def accounts(database_url, db):
+    import accounts as module
+
+    return module
+
+
+@pytest.fixture
+def make_user(accounts):
+    """Crée un compte testeur (par invitation) et retourne le dictionnaire utilisateur."""
+    counter = {"n": 0}
+
+    def create(username=None, password="mot-de-passe-solide"):
+        counter["n"] += 1
+        username = username or f"testeur{counter['n']}"
+        code = accounts.create_invitation(days=1, max_uses=1)
+        user = accounts.register(code, username, password)
+        user["password"] = password
+        return user
+
+    return create
+
+
+@pytest.fixture
+def make_owner(db):
+    """Crée le compte propriétaire (lié à un identifiant Telegram)."""
+
+    def create(telegram_id=4242, username="proprio"):
+        with db.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (username, role, telegram_id) VALUES (%s, 'owner', %s) "
+                "RETURNING id",
+                (username, telegram_id),
+            )
+            return {"id": cur.fetchone()[0], "username": username, "role": "owner",
+                    "telegram_id": telegram_id}
+
+    return create
 
 
 @pytest.fixture(scope="session")
@@ -131,7 +175,8 @@ def clean_tables():
     conn = psycopg2.connect(url)
     with conn, conn.cursor() as cur:
         cur.execute(
-            "TRUNCATE conversations, api_usage, pending_actions, audit_log RESTART IDENTITY"
+            "TRUNCATE conversations, api_usage, pending_actions, audit_log, users, sessions, "
+            "invitation_codes, auth_attempts, user_usage, provider_usage RESTART IDENTITY CASCADE"
         )
     conn.close()
 

@@ -6,6 +6,7 @@ Services : `db` (PostgreSQL), `orchestrator` (Flask), `telegram_bot`. Documentat
 
     cp .env.example .env
     # renseigner GEMINI_API_KEY, TELEGRAM_TOKEN, TELEGRAM_ALLOWED_USER_ID
+    # et FOX_SERVICE_TOKEN (voir « Comptes et accès » ci-dessous)
     docker compose up -d --build
     docker compose logs -f
 
@@ -46,6 +47,62 @@ sécurité automatique et une confirmation « OUI ») :
 `docker compose down -v` **supprime toutes les données** : ne l'utiliser
 qu'après une sauvegarde copiée hors du dossier du projet.
 
+## Comptes et accès (phase A)
+
+Plus aucune requête n'est acceptée sans identité. L'identité vient toujours du
+serveur, jamais d'un `user_id` envoyé par le client :
+
+- **interface web** : connexion par nom d'utilisateur et mot de passe, session
+  par cookie `HttpOnly` (`SameSite=Lax`, `Secure` si `COOKIE_SECURE=1` derrière
+  HTTPS), 7 jours par défaut (`SESSION_DAYS`) ;
+- **bot Telegram** : service interne de confiance. Il présente le secret
+  `FOX_SERVICE_TOKEN` (le même dans l'orchestrateur et le bot) et l'identifiant
+  Telegram, que l'orchestrateur associe à un compte actif.
+
+Deux rôles :
+
+| | propriétaire (`owner`) | testeur (`tester`) |
+|---|---|---|
+| Création | automatique au démarrage, depuis `TELEGRAM_ALLOWED_USER_ID` | inscription avec un code d'invitation |
+| IA | Gemini, secours Groq en conversation seule | Groq uniquement, jamais Gemini |
+| Outils | Google Agenda (avec confirmation) | aucun pour l'instant (agenda interne en phase B) |
+| Quota par jour | 200 appels, 500 000 tokens | 30 appels, 15 000 tokens |
+
+Les plafonds globaux (`MAX_CALLS_PER_DAY`, `MAX_TOKENS_PER_DAY`) et ceux de Groq
+(`GROQ_MAX_*`, sous le quota gratuit de 200 000 tokens par jour du compte) restent
+en vigueur. Toutes ces valeurs se règlent dans `.env`.
+
+Première mise à jour depuis la phase 0 :
+
+1. Sauvegarde : `.\scripts\backup.ps1`
+2. Dans `.env`, ajoute `FOX_SERVICE_TOKEN` (valeur obtenue avec
+   `python -c "import secrets; print(secrets.token_urlsafe(32))"`) et, si tu veux
+   te connecter à l'interface web, `OWNER_PASSWORD` (10 caractères minimum).
+3. `docker compose up -d --build`
+
+Au premier démarrage, ton compte propriétaire est créé et ton historique, tes
+actions en attente et ton journal d'audit (qui portaient ton identifiant
+Telegram) y sont rattachés. Aucune ligne n'est supprimée.
+
+Administration (dans le conteneur de l'orchestrateur) :
+
+    docker compose exec orchestrator python admin.py create-invite --days 7 --uses 1 --note "Marie"
+    docker compose exec orchestrator python admin.py list-invites
+    docker compose exec orchestrator python admin.py revoke-invite 3
+    docker compose exec orchestrator python admin.py list-users
+    docker compose exec orchestrator python admin.py disable-user marie
+    docker compose exec orchestrator python admin.py enable-user marie
+    docker compose exec -it orchestrator python admin.py set-password yann
+
+Le code d'invitation n'est affiché qu'une fois : seule son empreinte est stockée.
+Les mots de passe sont hachés avec scrypt. Après 5 échecs de connexion en 15
+minutes pour un même nom (20 pour une même adresse IP), les tentatives sont
+bloquées temporairement.
+
+Points d'API : `POST /auth/register` (code, username, password), `POST /auth/login`,
+`POST /auth/logout`, `GET /auth/me`, `POST /message`, `POST /actions/<id>/confirm|cancel`.
+Toute requête `POST` doit être au format JSON.
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils
@@ -54,16 +111,19 @@ ne touchent jamais à la base de FOX et n'appellent ni Gemini, ni Groq, ni Googl
     docker compose --profile test run --rm tests
 
 Ils couvrent : tentatives automatiques et erreurs Gemini, secours Groq,
-confirmation, refus, expiration et annulation des actions, plafonds, API Flask,
-migrations et scripts de sauvegarde.
+confirmation, refus, expiration et annulation des actions, plafonds par
+utilisateur, comptes, sessions, codes d'invitation, isolation entre utilisateurs,
+rôles et routage des fournisseurs, API Flask, migrations et scripts de sauvegarde.
+Les tests des scripts de sauvegarde sont ignorés si `pg_dump` est absent du conteneur.
 
 ## Fournisseurs IA
 
 - **Gemini** (principal) : erreurs 429, 500, 502, 503 et 504 réessayées avec des
   délais progressifs (`LLM_MAX_ATTEMPTS`, `LLM_RETRY_BUDGET_SECONDS`), puis
   erreur contrôlée (HTTP 503) affichée clairement dans Telegram.
-- **Groq** (secours gratuit, conversation seule, sans outils) : utilisé
-  seulement au premier tour d'une conversation. L'agenda ne passe jamais par Groq.
+- **Groq** (conversation seule, sans outils) : modèle principal des testeurs et
+  secours du propriétaire (seulement au premier tour d'une conversation).
+  L'agenda ne passe jamais par Groq.
   Les modèles Groq changent : `docker compose exec orchestrator python check_models.py`
   vérifie que `GROQ_MODEL` existe encore sur ton compte.
 
@@ -80,7 +140,9 @@ d'ouvrir FOX à des testeurs) :
 | Quota gratuit | selon le modèle | limites **partagées par tout le compte** : pour `openai/gpt-oss-20b`, 30 requêtes/min, 1 000/jour, 8 000 tokens/min, 200 000 tokens/jour |
 
 Conséquence : le quota Groq est commun à tous les testeurs et très serré. Les
-limites par utilisateur de la phase suivante devront en tenir compte.
+quotas par utilisateur (30 appels et 15 000 tokens par jour) et le plafond global
+Groq (`GROQ_MAX_*`) en tiennent compte : avec ces valeurs, une douzaine de testeurs
+actifs par jour atteignent le quota du compte.
 
 ## Agenda Google (outils de FOX)
 
@@ -127,6 +189,9 @@ de 7 jours : relance alors l'étape 5, ou passe l'application en « Production �
 ## Test de l'orchestrateur
 
     curl -s localhost:5000/health
-    curl -s -X POST localhost:5000/message \
+    curl -s -c cookies.txt -X POST localhost:5000/auth/login \
       -H 'Content-Type: application/json' \
-      -d '{"user_id": TON_ID_TELEGRAM, "text": "Bonjour"}'
+      -d '{"username": "yann", "password": "TON_MOT_DE_PASSE"}'
+    curl -s -b cookies.txt -X POST localhost:5000/message \
+      -H 'Content-Type: application/json' \
+      -d '{"text": "Bonjour"}'
