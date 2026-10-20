@@ -7,6 +7,7 @@
     docker compose exec orchestrator python admin.py disable-user marie
     docker compose exec orchestrator python admin.py enable-user marie
     docker compose exec -it orchestrator python admin.py set-password owner
+    docker compose exec orchestrator python admin.py purge
 
 Le code d'invitation n'est affiché qu'une seule fois : seul son empreinte est stockée.
 """
@@ -46,6 +47,12 @@ def cmd_revoke_invite(args):
         return 0
     print("Code introuvable ou déjà révoqué.")
     return 1
+
+
+def cmd_purge(args):
+    result = db.purge_history()  # durées : RETENTION_DAYS_OWNER / RETENTION_DAYS_TESTER
+    print(f"{result['chats']} conversation(s) supprimée(s), {result['private']} contexte(s) privé(s).")
+    return 0
 
 
 def cmd_list_users(args):
@@ -104,6 +111,7 @@ def build_parser():
     revoke.set_defaults(func=cmd_revoke_invite)
 
     sub.add_parser("list-users").set_defaults(func=cmd_list_users)
+    sub.add_parser("purge", help="supprime l'historique trop ancien").set_defaults(func=cmd_purge)
     for name, func in (("disable-user", cmd_disable_user), ("enable-user", cmd_enable_user),
                        ("set-password", cmd_set_password)):
         p = sub.add_parser(name)

@@ -108,28 +108,241 @@ def add_provider_tokens(provider, count):
 
 
 # --- Historique --------------------------------------------------------------
-def load_history(user_id, limit):
+# Chaque utilisateur a des conversations (table `chats`). La conversation active est la plus
+# récemment utilisée : `/nouveau` en crée une, ouvrir une ancienne la remet en tête.
+# En mode privé (table `private_mode`), rien n'est écrit dans `conversations` : seul un
+# contexte temporaire (`private_context`) est gardé quelques minutes.
+PRIVATE_CONTEXT_MINUTES = int(os.environ.get("PRIVATE_CONTEXT_MINUTES", "30"))
+TITLE_MAX_CHARS = 40
+# Conversations inactives supprimées après N jours (0 = jamais), selon le rôle.
+RETENTION_DAYS_OWNER = int(os.environ.get("RETENTION_DAYS_OWNER", "90"))
+RETENTION_DAYS_TESTER = int(os.environ.get("RETENTION_DAYS_TESTER", "30"))
+
+
+def make_title(text):
+    title = " ".join(str(text or "").split())
+    if len(title) > TITLE_MAX_CHARS:
+        title = title[: TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return title or None
+
+
+def _lock_chats(cur, user_id):
+    # Évite deux conversations créées en même temps pour le même utilisateur.
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"chats:{user_id}",))
+
+
+def _latest_chat(cur, user_id):
+    cur.execute(
+        "SELECT id FROM chats WHERE user_id = %s ORDER BY updated_at DESC, id DESC LIMIT 1",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _ensure_chat(cur, user_id):
+    _lock_chats(cur, user_id)
+    chat_id = _latest_chat(cur, user_id)
+    if chat_id is None:
+        cur.execute("INSERT INTO chats (user_id) VALUES (%s) RETURNING id", (user_id,))
+        chat_id = cur.fetchone()[0]
+    return chat_id
+
+
+def current_chat_id(user_id):
+    """Identifiant de la conversation active, ou None s'il n'y en a pas encore."""
     with cursor() as cur:
+        return _latest_chat(cur, user_id)
+
+
+def load_history(user_id, limit, chat_id=None):
+    """Derniers échanges d'une conversation (par défaut la conversation active)."""
+    with cursor() as cur:
+        if chat_id is None:
+            chat_id = _latest_chat(cur, user_id)
+            if chat_id is None:
+                return []
         cur.execute(
             """
             SELECT user_message, bot_reply FROM conversations
-            WHERE user_id = %s
+            WHERE user_id = %s AND chat_id = %s
             ORDER BY created_at DESC, id DESC
             LIMIT %s
             """,
-            (user_id, limit),
+            (user_id, chat_id, limit),
         )
         rows = cur.fetchall()
     rows.reverse()
     return rows
 
 
-def save_exchange(user_id, user_message, bot_reply):
+def save_exchange(user_id, user_message, bot_reply, chat_id=None):
+    """Enregistre un échange dans la conversation active (ou celle indiquée, si elle est à lui)."""
+    with cursor() as cur:
+        if chat_id is None:
+            chat_id = _ensure_chat(cur, user_id)
+        cur.execute(
+            """
+            UPDATE chats SET updated_at = now(), title = COALESCE(title, %s)
+            WHERE id = %s AND user_id = %s
+            """,
+            (make_title(user_message), chat_id, user_id),
+        )
+        if cur.rowcount != 1:
+            raise LookupError("conversation introuvable")
+        cur.execute(
+            """
+            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (user_id, chat_id, user_message, bot_reply),
+        )
+    return chat_id
+
+
+def start_chat(user_id):
+    """Nouvelle conversation (sort du mode privé). Réutilise la conversation active si vide."""
+    set_private(user_id, False)
+    with cursor() as cur:
+        _lock_chats(cur, user_id)
+        latest = _latest_chat(cur, user_id)
+        if latest is not None:
+            cur.execute("SELECT 1 FROM conversations WHERE chat_id = %s LIMIT 1", (latest,))
+            if cur.fetchone() is None:
+                cur.execute("UPDATE chats SET updated_at = now() WHERE id = %s", (latest,))
+                return latest
+        cur.execute("INSERT INTO chats (user_id) VALUES (%s) RETURNING id", (user_id,))
+        return cur.fetchone()[0]
+
+
+def open_chat(user_id, chat_id):
+    """Reprend une conversation existante (sort du mode privé). False si elle n'est pas à lui."""
     with cursor() as cur:
         cur.execute(
-            "INSERT INTO conversations (user_id, user_message, bot_reply) VALUES (%s, %s, %s)",
+            "UPDATE chats SET updated_at = now() WHERE id = %s AND user_id = %s",
+            (chat_id, user_id),
+        )
+        found = cur.rowcount == 1
+    if found:
+        set_private(user_id, False)
+    return found
+
+
+def chat_belongs_to(user_id, chat_id):
+    with cursor() as cur:
+        cur.execute("SELECT 1 FROM chats WHERE id = %s AND user_id = %s", (chat_id, user_id))
+        return cur.fetchone() is not None
+
+
+def list_chats(user_id, limit=20):
+    """Conversations non vides, la plus récente d'abord."""
+    with cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.id, c.title, c.created_at, c.updated_at,
+                   (SELECT count(*) FROM conversations m WHERE m.chat_id = c.id)
+            FROM chats c
+            WHERE c.user_id = %s
+              AND EXISTS (SELECT 1 FROM conversations m WHERE m.chat_id = c.id)
+            ORDER BY c.updated_at DESC, c.id DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        )
+        return [
+            {"id": r[0], "title": r[1], "created_at": r[2].isoformat(),
+             "updated_at": r[3].isoformat(), "messages": r[4]}
+            for r in cur.fetchall()
+        ]
+
+
+def delete_chat(user_id, chat_id):
+    """Supprime définitivement une conversation et ses messages. False si elle n'est pas à lui."""
+    with cursor() as cur:
+        cur.execute("DELETE FROM chats WHERE id = %s AND user_id = %s", (chat_id, user_id))
+        return cur.rowcount == 1
+
+
+def delete_all_chats(user_id):
+    """Supprime tout l'historique de l'utilisateur. Retourne le nombre de conversations."""
+    with cursor() as cur:
+        cur.execute("DELETE FROM chats WHERE user_id = %s", (user_id,))
+        count = cur.rowcount
+        cur.execute("DELETE FROM conversations WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM private_context WHERE user_id = %s", (user_id,))
+        return count
+
+
+# --- Mode « ne pas enregistrer » ---------------------------------------------
+def private_active(user_id):
+    with cursor() as cur:
+        cur.execute("SELECT 1 FROM private_mode WHERE user_id = %s", (user_id,))
+        return cur.fetchone() is not None
+
+
+def set_private(user_id, on):
+    with cursor() as cur:
+        if on:
+            cur.execute(
+                "INSERT INTO private_mode (user_id) VALUES (%s) ON CONFLICT DO NOTHING", (user_id,)
+            )
+        else:
+            cur.execute("DELETE FROM private_mode WHERE user_id = %s", (user_id,))
+            cur.execute("DELETE FROM private_context WHERE user_id = %s", (user_id,))
+
+
+def save_private_exchange(user_id, user_message, bot_reply):
+    with cursor() as cur:
+        cur.execute(
+            "INSERT INTO private_context (user_id, user_message, bot_reply) VALUES (%s, %s, %s)",
             (user_id, user_message, bot_reply),
         )
+
+
+def load_private_history(user_id, limit):
+    with cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_message, bot_reply FROM private_context
+            WHERE user_id = %s AND created_at > now() - make_interval(mins => %s)
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+            """,
+            (user_id, PRIVATE_CONTEXT_MINUTES, limit),
+        )
+        rows = cur.fetchall()
+    rows.reverse()
+    return rows
+
+
+# --- Purge de l'historique ancien --------------------------------------------
+def purge_history(owner_days=None, tester_days=None):
+    """Supprime les conversations inactives depuis trop longtemps (0 = ne jamais purger).
+
+    Retourne {"chats": n, "private": m}. Le contexte du mode privé de plus de
+    PRIVATE_CONTEXT_MINUTES minutes est toujours supprimé.
+    """
+    owner_days = RETENTION_DAYS_OWNER if owner_days is None else owner_days
+    tester_days = RETENTION_DAYS_TESTER if tester_days is None else tester_days
+    deleted = 0
+    with cursor() as cur:
+        for role_filter, days in (("= 'owner'", owner_days), ("<> 'owner'", tester_days)):
+            if days and days > 0:
+                cur.execute(
+                    f"""
+                    DELETE FROM chats c USING users u
+                    WHERE u.id = c.user_id AND u.role {role_filter}
+                      AND c.updated_at < now() - make_interval(days => %s)
+                    """,  # noqa: S608 (fragment fixe, jamais issu d'une saisie)
+                    (days,),
+                )
+                deleted += cur.rowcount
+        cur.execute(
+            "DELETE FROM private_context WHERE created_at < now() - make_interval(mins => %s)",
+            (PRIVATE_CONTEXT_MINUTES,),
+        )
+        private = cur.rowcount
+    return {"chats": deleted, "private": private}
 
 
 # --- Journal d'audit ---------------------------------------------------------

@@ -89,7 +89,7 @@ def providers(agent, monkeypatch):
         state.gemini += 1
         raise AssertionError("Gemini ne doit pas être appelé pour ce rôle")
 
-    def groq(user_id, text):
+    def groq(user_id, text, *_):
         state.groq.append((user_id, text))
         return "réponse Groq", 12
 
@@ -105,7 +105,7 @@ def test_un_testeur_passe_uniquement_par_groq_sans_outils(agent, providers):
 
 
 def test_un_testeur_n_est_jamais_bascule_vers_gemini_si_groq_est_indisponible(agent, providers, monkeypatch):
-    def down(user_id, text):
+    def down(user_id, text, *_):
         raise agent.LLMUnavailable("Groq indisponible")
 
     monkeypatch.setattr(agent, "groq_reply", down)

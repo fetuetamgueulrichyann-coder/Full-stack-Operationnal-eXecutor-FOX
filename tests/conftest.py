@@ -18,6 +18,7 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ORCHESTRATOR_DIR = pathlib.Path(os.environ.get("ORCHESTRATOR_DIR", ROOT / "orchestrator"))
+BOT_DIR = pathlib.Path(os.environ.get("BOT_DIR", ROOT / "telegram_bot"))
 DB_DIR = pathlib.Path(os.environ.get("DB_DIR", ROOT / "db"))
 ADMIN_URL = os.environ.get("TEST_ADMIN_URL")
 
@@ -29,6 +30,7 @@ if not ADMIN_URL:
     )
 
 sys.path.insert(0, str(ORCHESTRATOR_DIR))
+sys.path.insert(1, str(BOT_DIR))  # logique du bot sans Telegram (botlogic.py)
 
 # Environnement fictif défini AVANT l'import des modules de FOX.
 os.environ.update(
@@ -176,7 +178,8 @@ def clean_tables():
     with conn, conn.cursor() as cur:
         cur.execute(
             "TRUNCATE conversations, api_usage, pending_actions, audit_log, users, sessions, "
-            "invitation_codes, auth_attempts, user_usage, provider_usage RESTART IDENTITY CASCADE"
+            "invitation_codes, auth_attempts, user_usage, provider_usage, chats, private_mode, "
+            "private_context RESTART IDENTITY CASCADE"
         )
     conn.close()
 

@@ -1,6 +1,7 @@
 import hmac
 import logging
 import os
+import time
 import uuid
 
 from flask import Flask, jsonify, request
@@ -28,6 +29,9 @@ COOKIE_NAME = "fox_session"
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"  # à activer derrière HTTPS (VPS)
 MAX_INPUT_CHARS = 4000
 
+PURGE_INTERVAL_SECONDS = 3600
+_last_purge = 0.0
+
 app = Flask(__name__)
 
 AUTH_STATUS = {
@@ -37,7 +41,28 @@ AUTH_STATUS = {
     "username_taken": 409,
     "username_invalid": 400,
     "password_weak": 400,
+    "account_exists": 409,
 }
+
+
+def body():
+    return request.get_json(silent=True) or {}
+
+
+def maybe_purge():
+    """Supprime l'historique trop ancien, au plus une fois par heure et par processus."""
+    global _last_purge
+    now = time.monotonic()
+    if _last_purge and now - _last_purge < PURGE_INTERVAL_SECONDS:
+        return
+    _last_purge = now
+    try:
+        result = db.purge_history()
+    except Exception:
+        log.exception("echec de la purge de l'historique")
+        return
+    if result["chats"] or result["private"]:
+        log.info("Purge : %s conversation(s), %s contexte(s) privé(s)", result["chats"], result["private"])
 
 
 def user_limits(role):
@@ -50,13 +75,17 @@ def user_limits(role):
 def require_json_for_post():
     # Un corps JSON déclenche une vérification préalable (preflight) des navigateurs entre
     # origines différentes : un formulaire d'un autre site ne peut pas imiter ces requêtes.
-    if request.method == "POST" and not request.is_json:
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and not request.is_json:
         return jsonify(error="Content-Type application/json requis"), 415
 
 
 @app.errorhandler(accounts.AuthError)
 def handle_auth_error(exc):
     return jsonify(error=exc.message, code=exc.code), AUTH_STATUS.get(exc.code, 400)
+
+
+def service_token_valid(token):
+    return bool(SERVICE_TOKEN) and token is not None and hmac.compare_digest(token, SERVICE_TOKEN)
 
 
 def authenticate(data):
@@ -67,7 +96,7 @@ def authenticate(data):
     """
     service_token = request.headers.get("X-Fox-Service-Token")
     if service_token is not None:
-        if not SERVICE_TOKEN or not hmac.compare_digest(service_token, SERVICE_TOKEN):
+        if not service_token_valid(service_token):
             db.audit(None, "denied", None, {"reason": "jeton de service invalide"})
             return None, (jsonify(error="non authentifie"), 401)
         user = accounts.user_from_telegram(data.get("telegram_id"))
@@ -144,10 +173,47 @@ def me():
     return jsonify(user=user)
 
 
+@app.post("/auth/telegram")
+def register_telegram():
+    """Inscription d'un testeur depuis Telegram (/start CODE). Réservé au bot (jeton de service)."""
+    if not service_token_valid(request.headers.get("X-Fox-Service-Token")):
+        db.audit(None, "denied", None, {"reason": "jeton de service invalide"})
+        return jsonify(error="non authentifie"), 401
+    data = body()
+    user = accounts.register_telegram(data.get("code"), data.get("telegram_id"))
+    db.audit(user["id"], "registered", None, {"role": user["role"], "via": "telegram"})
+    return jsonify(user=user), 201
+
+
 # --- Messages ----------------------------------------------------------------
+def conversation_context(user_id, data):
+    """Retourne (privé, identifiant de conversation, erreur).
+
+    Le mode privé l'emporte toujours : on n'enregistre jamais, même si un chat_id est fourni.
+    """
+    if db.private_active(user_id):
+        return True, None, None
+    chat_id = data.get("chat_id")
+    if chat_id is None:
+        return False, db.current_chat_id(user_id), None
+    if isinstance(chat_id, bool) or not isinstance(chat_id, int):
+        return False, None, (jsonify(error="chat_id invalide"), 400)
+    if not db.chat_belongs_to(user_id, chat_id):
+        return False, None, (jsonify(error="conversation introuvable"), 404)
+    return False, chat_id, None
+
+
+def store_exchange(user_id, private, chat_id, user_message, bot_reply):
+    """Enregistre l'échange dans la conversation, ou en mémoire temporaire en mode privé."""
+    if private:
+        db.save_private_exchange(user_id, user_message, bot_reply)
+        return None
+    return db.save_exchange(user_id, user_message, bot_reply, chat_id)
+
+
 @app.post("/message")
 def message():
-    data = request.get_json(silent=True) or {}
+    data = body()
     user, error = authenticate(data)
     if error:
         return error
@@ -159,6 +225,11 @@ def message():
     if len(text) > MAX_INPUT_CHARS:
         return jsonify(error="message trop long"), 413
 
+    maybe_purge()
+    private, chat_id, context_error = conversation_context(user_id, data)
+    if context_error:
+        return context_error
+
     if agent.is_undo_request(text):
         reply, pending = agent.propose_undo(user_id)
     else:
@@ -169,7 +240,9 @@ def message():
             return jsonify(error="plafond journalier atteint", scope=exc.scope), 429
 
         try:
-            reply, tokens, pending = agent.chat(user_id, text, role)
+            reply, tokens, pending = agent.chat(
+                user_id, text, role, chat_id=chat_id, private=private
+            )
         except agent.ProviderQuotaExceeded:
             return jsonify(error="capacite du service atteinte"), 503
         except agent.LLMUnavailable:
@@ -191,14 +264,13 @@ def message():
         reply = "Action(s) en attente de confirmation :\n" + "\n".join(
             f"- {p['summary']}" for p in pending
         )
-    if reply != agent.EMPTY_REPLY:
-        db.save_exchange(user_id, text, reply)
+    chat_id = store_exchange(user_id, private, chat_id, text, reply) if reply != agent.EMPTY_REPLY else chat_id
 
-    return jsonify(reply=reply, pending=pending)
+    return jsonify(reply=reply, pending=pending, chat_id=chat_id, private=private)
 
 
 def decide(action_id, confirm):
-    data = request.get_json(silent=True) or {}
+    data = body()
     user, error = authenticate(data)
     if error:
         return error
@@ -210,7 +282,8 @@ def decide(action_id, confirm):
 
     result = agent.resolve_action(user["id"], action_id, confirm, user["role"])
     label = "Confirmation de l'action proposée" if confirm else "Annulation de l'action proposée"
-    db.save_exchange(user["id"], label, result)
+    private = db.private_active(user["id"])
+    store_exchange(user["id"], private, None, label, result)
     return jsonify(reply=result)
 
 
@@ -222,3 +295,79 @@ def confirm_action(action_id):
 @app.post("/actions/<action_id>/cancel")
 def cancel_action(action_id):
     return decide(action_id, False)
+
+
+# --- Conversations et mode privé -----------------------------------------------
+def chat_auth():
+    """Authentifie une requête sur les conversations (pour GET : telegram_id en paramètre)."""
+    data = {"telegram_id": request.args.get("telegram_id")} if request.method == "GET" else body()
+    return authenticate(data)
+
+
+@app.get("/chats")
+def chats_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    private = db.private_active(user["id"])
+    chats = db.list_chats(user["id"])
+    # « current » : la conversation active, seulement si elle contient déjà des messages
+    # (après /nouveau, la conversation active est vide : il n'y a rien à reprendre ni à supprimer).
+    current = None
+    if not private and chats and db.current_chat_id(user["id"]) == chats[0]["id"]:
+        current = chats[0]["id"]
+    return jsonify(chats=chats, current=current, private=private)
+
+
+@app.post("/chats")
+def chats_new():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(chat_id=db.start_chat(user["id"]), private=False), 201
+
+
+@app.post("/chats/<int:chat_id>/open")
+def chats_open(chat_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.open_chat(user["id"], chat_id):
+        return jsonify(error="conversation introuvable"), 404
+    return jsonify(chat_id=chat_id, private=False)
+
+
+@app.delete("/chats/<int:chat_id>")
+def chats_delete(chat_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.delete_chat(user["id"], chat_id):
+        return jsonify(error="conversation introuvable"), 404
+    db.audit(user["id"], "chat_deleted", None, {"chat_id": chat_id})
+    return jsonify(status="deleted")
+
+
+@app.delete("/chats")
+def chats_delete_all():
+    user, error = chat_auth()
+    if error:
+        return error
+    if body().get("confirm") != "all":
+        return jsonify(error='confirmation requise : {"confirm": "all"}'), 400
+    count = db.delete_all_chats(user["id"])
+    db.audit(user["id"], "history_deleted", None, {"chats": count})
+    return jsonify(status="deleted", chats=count)
+
+
+@app.post("/private")
+def private_mode():
+    user, error = chat_auth()
+    if error:
+        return error
+    on = body().get("on")
+    if not isinstance(on, bool):
+        return jsonify(error="on doit être true ou false"), 400
+    db.set_private(user["id"], on)
+    db.audit(user["id"], "private_on" if on else "private_off", None, {})
+    return jsonify(private=on)

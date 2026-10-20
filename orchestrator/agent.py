@@ -211,13 +211,13 @@ def propose_undo(user_id):
 
 
 # --- Secours Groq (conversation seule, sans outils) ---------------------------
-def groq_reply(user_id, text):
+def groq_reply(user_id, text, chat_id=None, private=False):
     """Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue aussi."""
     if not db.reserve_provider("groq", GROQ_MAX_CALLS_PER_DAY, GROQ_MAX_TOKENS_PER_DAY):
         log.warning("Plafond journalier Groq atteint")
         raise ProviderQuotaExceeded("plafond Groq atteint")
     messages = [{"role": "system", "content": system_prompt(with_tools=False)}]
-    for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT):
+    for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT, chat_id, private):
         messages.append({"role": "user", "content": user_message})
         messages.append({"role": "assistant", "content": bot_reply})
     messages.append({"role": "user", "content": text})
@@ -285,18 +285,22 @@ def shorten(text):
     return f"{text[:half]} […] {text[-half:]}"
 
 
-def useful_history(user_id, limit):
-    """Derniers échanges utiles : sans réponse vide, chaque message raccourci."""
-    return [
-        (shorten(u), shorten(b))
-        for u, b in db.load_history(user_id, limit)
-        if b != EMPTY_REPLY
-    ]
+def useful_history(user_id, limit, chat_id=None, private=False):
+    """Derniers échanges utiles : sans réponse vide, chaque message raccourci.
+
+    En mode privé, le contexte vient de la mémoire temporaire ; sinon de la conversation
+    indiquée (par défaut la conversation active).
+    """
+    if private:
+        rows = db.load_private_history(user_id, limit)
+    else:
+        rows = db.load_history(user_id, limit, chat_id)
+    return [(shorten(u), shorten(b)) for u, b in rows if b != EMPTY_REPLY]
 
 
-def build_contents(user_id, text):
+def build_contents(user_id, text, chat_id=None, private=False):
     contents = []
-    for user_message, bot_reply in useful_history(user_id, HISTORY_LIMIT):
+    for user_message, bot_reply in useful_history(user_id, HISTORY_LIMIT, chat_id, private):
         contents.append(
             types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
         )
@@ -331,7 +335,7 @@ def describe_empty(response):
     )
 
 
-def chat(user_id, text, role="owner"):
+def chat(user_id, text, role="owner", chat_id=None, private=False):
     """Retourne (réponse, tokens consommés, actions en attente).
 
     Routage : le propriétaire utilise Gemini (avec ses outils, secours Groq en conversation
@@ -341,10 +345,10 @@ def chat(user_id, text, role="owner"):
     if role != "owner":
         if not GROQ_API_KEY:
             raise LLMUnavailable("aucun fournisseur disponible pour ce rôle")
-        reply, tokens = groq_reply(user_id, text)
+        reply, tokens = groq_reply(user_id, text, chat_id, private)
         return reply, tokens, []
 
-    contents = build_contents(user_id, text)
+    contents = build_contents(user_id, text, chat_id, private)
     config = build_config(role)
     total_tokens = 0
 
@@ -360,7 +364,7 @@ def chat(user_id, text, role="owner"):
             if round_index != 0 or not GROQ_API_KEY:
                 raise
             log.warning("Gemini indisponible, bascule vers Groq (%s)", GROQ_MODEL)
-            reply, tokens = groq_reply(user_id, text)
+            reply, tokens = groq_reply(user_id, text, chat_id, private)
             return reply, total_tokens + tokens, []
         usage = response.usage_metadata
         if usage and usage.total_token_count:

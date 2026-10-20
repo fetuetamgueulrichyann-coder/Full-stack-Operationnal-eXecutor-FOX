@@ -93,6 +93,7 @@ Administration (dans le conteneur de l'orchestrateur) :
     docker compose exec orchestrator python admin.py disable-user marie
     docker compose exec orchestrator python admin.py enable-user marie
     docker compose exec -it orchestrator python admin.py set-password yann
+    docker compose exec orchestrator python admin.py purge
 
 Le code d'invitation n'est affiché qu'une fois : seule son empreinte est stockée.
 Les mots de passe sont hachés avec scrypt. Après 5 échecs de connexion en 15
@@ -101,7 +102,55 @@ bloquées temporairement.
 
 Points d'API : `POST /auth/register` (code, username, password), `POST /auth/login`,
 `POST /auth/logout`, `GET /auth/me`, `POST /message`, `POST /actions/<id>/confirm|cancel`.
-Toute requête `POST` doit être au format JSON.
+Toute requête `POST`, `PUT`, `PATCH` ou `DELETE` doit être au format JSON.
+
+## Conversations, vie privée et inscription par Telegram (phase A2a)
+
+**Qui peut parler au bot.** Le bot n'est plus verrouillé sur un identifiant : l'orchestrateur
+décide, selon les comptes actifs. Un inconnu reçoit seulement la consigne d'inscription et
+n'a accès à rien. La variable `TELEGRAM_ALLOWED_USER_ID` sert maintenant uniquement à créer le
+compte propriétaire.
+
+**Inviter un testeur sans interface web.**
+
+1. `docker compose exec orchestrator python admin.py create-invite --days 7 --uses 1 --note "Marie"`
+2. Tu transmets le code. La personne ouvre le bot et envoie `/start FOX-XXXX-XXXX-XXXX`.
+3. Son compte testeur est créé (Groq, sans outils, 30 appels et 15 000 tokens par jour).
+
+Les essais de code sont limités (10 échecs par identifiant Telegram), un compte déjà inscrit
+ne consomme pas le code, et le code est à usage unique par défaut.
+
+**Commandes Telegram**
+
+| Commande | Effet |
+|---|---|
+| `/nouveau` | nouvelle conversation (le contexte de FOX repart de zéro) |
+| `/historique` | liste des conversations, boutons pour en reprendre une |
+| `/effacer` | supprime la conversation courante ou tout l'historique (seconde confirmation pour « tout ») |
+| `/prive` | mode « ne pas enregistrer » ; `/prive off` ou `/nouveau` pour en sortir |
+| `/annuler` | annule la dernière action effectuée |
+
+FOX ne relit que la conversation en cours : changer de sujet avec `/nouveau` améliore aussi
+les réponses et réduit la consommation de tokens.
+
+**Mode privé.** Tant qu'il est actif, rien n'est écrit dans l'historique. FOX garde seulement un
+court contexte en mémoire (30 minutes, `PRIVATE_CONTEXT_MINUTES`) pour suivre la discussion,
+supprimé automatiquement et à la sortie du mode. Le mode ne s'éteint jamais tout seul : on
+n'enregistre jamais par surprise. Ce qui subsiste malgré tout : le comptage des quotas et le
+journal d'audit des actions (par exemple « événement créé »), qui contient les paramètres
+d'une action mais jamais le texte de la conversation.
+
+**Suppression et conservation.** `/effacer` supprime définitivement les messages de la base.
+Les sauvegardes déjà faites contiennent encore l'ancienne version : elles sont conservées
+14 jours, la suppression est donc complète au bout de 14 jours. Les conversations inactives
+sont supprimées automatiquement après `RETENTION_DAYS_OWNER` jours (90) pour le propriétaire
+et `RETENTION_DAYS_TESTER` jours (30) pour les testeurs (0 = jamais). La purge s'exécute au
+plus une fois par heure, à l'usage, ou à la demande avec `admin.py purge`.
+
+**API (pour la future interface web).** `GET /chats`, `POST /chats` (nouvelle),
+`POST /chats/<id>/open`, `DELETE /chats/<id>`, `DELETE /chats` avec `{"confirm": "all"}`,
+`POST /private` avec `{"on": true|false}`, `POST /message` avec un `chat_id` facultatif
+(le mode privé l'emporte toujours), `POST /auth/telegram` (réservé au bot).
 
 ## Tests
 

@@ -21,7 +21,7 @@ import db
 
 log = logging.getLogger("bootstrap")
 
-LEGACY_TABLES = ("conversations", "pending_actions", "audit_log")
+LEGACY_TABLES = ("chats", "conversations", "pending_actions", "audit_log")
 
 
 def bootstrap_owner(telegram_id, username="owner", password=None):

@@ -33,7 +33,7 @@ def post(client, text="Bonjour", telegram_id=TELEGRAM_ID):
 
 
 def stub_chat(monkeypatch, agent, result=None, error=None):
-    def fake(user_id, text, role="owner"):
+    def fake(user_id, text, role="owner", **_):
         if error:
             raise error
         return result

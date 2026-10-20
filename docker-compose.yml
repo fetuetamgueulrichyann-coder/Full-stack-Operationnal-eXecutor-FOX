@@ -52,6 +52,9 @@ services:
       OWNER_MAX_TOKENS_PER_DAY: ${OWNER_MAX_TOKENS_PER_DAY:-500000}
       TESTER_MAX_CALLS_PER_DAY: ${TESTER_MAX_CALLS_PER_DAY:-30}
       TESTER_MAX_TOKENS_PER_DAY: ${TESTER_MAX_TOKENS_PER_DAY:-15000}
+      RETENTION_DAYS_OWNER: ${RETENTION_DAYS_OWNER:-90}
+      RETENTION_DAYS_TESTER: ${RETENTION_DAYS_TESTER:-30}
+      PRIVATE_CONTEXT_MINUTES: ${PRIVATE_CONTEXT_MINUTES:-30}
       GROQ_MAX_CALLS_PER_DAY: ${GROQ_MAX_CALLS_PER_DAY:-900}
       GROQ_MAX_TOKENS_PER_DAY: ${GROQ_MAX_TOKENS_PER_DAY:-180000}
       SESSION_DAYS: ${SESSION_DAYS:-7}
@@ -94,9 +97,11 @@ services:
     environment:
       TEST_ADMIN_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/postgres
       ORCHESTRATOR_DIR: /srv
+      BOT_DIR: /bot
       DB_DIR: /db
     volumes:
       - ./orchestrator:/srv
+      - ./telegram_bot:/bot:ro
       - ./tests:/tests:ro
       - ./db:/db:ro
     command: sh -c "pip install -q -r /srv/requirements-dev.txt && python -m pytest -q /tests"

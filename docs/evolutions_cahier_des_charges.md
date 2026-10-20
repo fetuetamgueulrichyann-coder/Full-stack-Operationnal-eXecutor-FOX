@@ -2,7 +2,7 @@
 
 Ce fichier suit, au fil du développement, ce qui change par rapport au cahier des charges
 initial (13 pages) et au document « Prompts de développement ». Il sert de base à la mise à
-jour de ces deux documents. Dernière mise à jour : 17/10/2026 (fin de la phase 0).
+jour de ces deux documents. Dernière mise à jour : 19/10/2026 (phase A2a livrée : conversations, mode privé, purge, inscription Telegram).
 
 ## Décisions validées
 
@@ -38,18 +38,18 @@ jour de ces deux documents. Dernière mise à jour : 17/10/2026 (fin de la phase
 | 6 (OAuth Google par utilisateur) | Remplacé : Google Calendar reste personnel au propriétaire ; agenda interne pour les testeurs |
 | 10 (tests fonctionnels) | Partiel : suite pytest de non-régression (113 tests) ; jeu de 30 commandes en langage naturel à écrire |
 | 11, 12 (Gmail OAuth, envoi) | Remplacés par la rédaction, le résumé et le lien Gmail prérempli |
-| 13 (permissions et audit généralisés) | Partiel : à compléter en phase A |
-| 16 (quotas et secours) | Fait ; quotas par utilisateur en phase A |
-| 18 (suivi des coûts) | Partiel : compteurs globaux ; par utilisateur en phase A |
+| 13 (permissions et audit généralisés) | Partiel : rôles et contrôle à l'exécution faits (phase A1) ; audit des connexions et inscriptions fait |
+| 16 (quotas et secours) | Fait, y compris quotas par utilisateur et plafond Groq global (phase A1) |
+| 18 (suivi des coûts) | Partiel : compteurs globaux, par utilisateur et par fournisseur (phase A1) ; tableau de suivi à faire |
 | 19 (sauvegardes) | Fait : scripts de sauvegarde et de restauration (phase 0) |
 | 14, 15, 17, 20 à 25 | À faire |
 
 ## Prompts à ajouter
 
 1. Migrations numérotées et sauvegardes (fait, phase 0).
-2. Comptes, sessions, codes d'invitation, rôles propriétaire et testeur.
-3. Quotas par utilisateur et par minute, configurables ; plafond global.
-4. Historique par conversation : consultation, suppression, option « Ne pas enregistrer », purge.
+2. Comptes, sessions, codes d'invitation, rôles propriétaire et testeur (fait, phase A1).
+3. Quotas par utilisateur (fait, phase A1) et par minute (à faire), configurables ; plafond global.
+4. Historique par conversation : consultation, suppression, option « Ne pas enregistrer », purge (fait, phase A2a ; mise en forme des réponses : phase A2b).
 5. Agenda interne par utilisateur : fuseau horaire, conflits, outils de même nom que Google.
 6. E-mails : rédaction, amélioration, résumé, lien Gmail prérempli, bouton « Copier ».
 7. Module commercial : clients, devis (lignes, totaux, TVA, numérotation) calculés en Python.

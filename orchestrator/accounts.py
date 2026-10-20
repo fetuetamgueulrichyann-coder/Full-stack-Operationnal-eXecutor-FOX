@@ -14,6 +14,8 @@ import os
 import re
 import secrets
 
+from psycopg2 import errors as pg_errors
+
 import db
 
 SESSION_DAYS = int(os.environ.get("SESSION_DAYS", "7"))
@@ -193,6 +195,67 @@ def register_from_ip(code, username, password, ip):
         if exc.code == "invitation_invalid":
             _record_attempt(REGISTER_KEY, ip, False)
         raise
+
+
+def register_telegram(code, telegram_id):
+    """Crée un compte testeur lié à un identifiant Telegram (sans mot de passe web).
+
+    Les essais de code sont limités par identifiant Telegram. Un identifiant déjà lié à un
+    compte ne consomme pas le code.
+    """
+    try:
+        telegram_id = int(telegram_id)
+    except (TypeError, ValueError):
+        raise AuthError("invitation_invalid", "Identifiant Telegram invalide.") from None
+    if telegram_id <= 0:
+        raise AuthError("invitation_invalid", "Identifiant Telegram invalide.")
+    attempts_key = f"tg:{telegram_id}"
+    with db.cursor() as cur:
+        _, failures = _recent_failures(cur, REGISTER_KEY, attempts_key)
+    if failures >= MAX_FAILED_REGISTER_PER_IP:
+        raise AuthError("too_many_attempts", "Trop de tentatives. Réessaie dans quelques minutes.")
+
+    normalized = normalize_code(code)
+    username = f"tg{telegram_id}"
+    try:
+        if not normalized:
+            raise AuthError("invitation_invalid", "Code d'invitation invalide ou expiré.")
+        with db.cursor() as cur:
+            cur.execute("SELECT 1 FROM users WHERE telegram_id = %s", (telegram_id,))
+            if cur.fetchone():
+                raise AuthError("account_exists", "Ce compte Telegram est déjà inscrit.")
+            cur.execute(
+                """
+                SELECT id FROM invitation_codes
+                WHERE code_hash = %s AND revoked_at IS NULL AND expires_at > now() AND uses < max_uses
+                FOR UPDATE
+                """,
+                (sha256(normalized),),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise AuthError("invitation_invalid", "Code d'invitation invalide ou expiré.")
+            invitation_id = row[0]
+            cur.execute("SELECT 1 FROM users WHERE lower(username) = lower(%s)", (username,))
+            if cur.fetchone():
+                raise AuthError("username_taken", "Ce nom d'utilisateur n'est pas disponible.")
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO users (username, role, telegram_id, invitation_id)
+                    VALUES (%s, %s, %s, %s) RETURNING id
+                    """,
+                    (username, ROLE_TESTER, telegram_id, invitation_id),
+                )
+            except pg_errors.UniqueViolation:
+                raise AuthError("account_exists", "Ce compte Telegram est déjà inscrit.") from None
+            user_id = cur.fetchone()[0]
+            cur.execute("UPDATE invitation_codes SET uses = uses + 1 WHERE id = %s", (invitation_id,))
+    except AuthError as exc:
+        if exc.code == "invitation_invalid":
+            _record_attempt(REGISTER_KEY, attempts_key, False)
+        raise
+    return {"id": user_id, "username": username, "role": ROLE_TESTER}
 
 
 # --- Connexion et sessions ---------------------------------------------------

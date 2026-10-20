@@ -23,7 +23,7 @@ def seen(agent, monkeypatch):
     """Remplace l'agent par un double qui note qui l'appelle."""
     calls = []
 
-    def fake(user_id, text, role="owner"):
+    def fake(user_id, text, role="owner", **_):
         calls.append({"user_id": user_id, "role": role, "text": text})
         return f"écho : {text}", 5, []
 
