@@ -33,9 +33,14 @@ class Message:
         self.text = text
         self.chat_id = 55
         self.replies = []
+        self.modes = []
+        self.refuse_html = False
 
-    async def reply_text(self, text, reply_markup=None):
+    async def reply_text(self, text, reply_markup=None, parse_mode=None):
+        if self.refuse_html and parse_mode is not None:
+            raise bot.BadRequest("Can't parse entities")
         self.replies.append((text, reply_markup))
+        self.modes.append(parse_mode)
 
 
 class Query:
@@ -373,3 +378,60 @@ def test_les_commandes_sont_limitees_aux_conversations_privees(monkeypatch):
     for handler in app.handlers[0]:
         if hasattr(handler, "commands"):
             assert handler.filters is not None, handler.commands
+
+
+# --- Mise en forme des réponses (phase A2b) ---------------------------------------
+def test_reponse_rendue_en_html_telegram(server, context):
+    server.routes[("POST", "/message")] = Response(
+        200, {"reply": "Voici **l'essentiel** : `x < y` & fin", "pending": []}
+    )
+    upd, msg = update()
+    run(bot.relay(upd, context))
+    assert msg.replies == [("Voici <b>l'essentiel</b> : <code>x &lt; y</code> &amp; fin", None)]
+    assert msg.modes == [bot.ParseMode.HTML]
+
+
+def test_repli_en_texte_brut_si_telegram_refuse_le_html(server, context):
+    server.routes[("POST", "/message")] = Response(200, {"reply": "Un **gras** <ok>", "pending": []})
+    upd, msg = update()
+    msg.refuse_html = True
+    run(bot.relay(upd, context))
+    assert msg.replies == [("Un **gras** <ok>", None)]  # le texte arrive quand même, sans HTML
+    assert msg.modes == [None]
+
+
+def test_long_message_envoye_en_plusieurs_parties_aux_paragraphes(server, context):
+    paragraphs = [f"Partie {i} " + "mot " * 300 for i in range(8)]
+    server.routes[("POST", "/message")] = Response(200, {"reply": "\n\n".join(paragraphs), "pending": []})
+    upd, msg = update()
+    run(bot.relay(upd, context))
+    assert len(msg.replies) > 1
+    assert all(len(text) <= 4096 for text, _ in msg.replies)
+    assert all(text.startswith("Partie") for text, _ in msg.replies)
+
+
+def test_action_en_attente_en_html_avec_boutons_et_echappement(server, context):
+    action = "6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
+    server.routes[("POST", "/message")] = Response(
+        200,
+        {"reply": "x", "pending": [{"id": action, "summary": "Créer l'événement « <b>A</b> »\nQuand : demain"}]},
+    )
+    upd, msg = update()
+    run(bot.relay(upd, context))
+    text, markup = msg.replies[0]
+    assert text == "<b>Action proposée</b>\nCréer l'événement « &lt;b&gt;A&lt;/b&gt; »\nQuand : demain"
+    assert msg.modes == [bot.ParseMode.HTML]
+    assert buttons(markup)[0][0][1] == f"ok:{action}"
+
+
+def test_action_en_attente_repli_texte_brut_garde_les_boutons(server, context):
+    action = "6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
+    server.routes[("POST", "/message")] = Response(
+        200, {"reply": "x", "pending": [{"id": action, "summary": "Créer A"}]}
+    )
+    upd, msg = update()
+    msg.refuse_html = True
+    run(bot.relay(upd, context))
+    text, markup = msg.replies[0]
+    assert text == "Action proposée :\nCréer A"
+    assert buttons(markup)[0][0][1] == f"ok:{action}"

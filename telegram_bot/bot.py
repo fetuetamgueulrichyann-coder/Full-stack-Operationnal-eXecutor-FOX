@@ -8,7 +8,8 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -18,7 +19,7 @@ from telegram.ext import (
     filters,
 )
 
-from botlogic import UnknownUsers, chunks, history_buttons, start_code
+from botlogic import UnknownUsers, action_message, history_buttons, start_code, telegram_messages
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -68,6 +69,30 @@ def keyboard(rows):
     return InlineKeyboardMarkup(
         [[InlineKeyboardButton(text, callback_data=data) for text, data in row] for row in rows]
     )
+
+
+async def send_markdown(message, text, reply_markup=None):
+    """Envoie un texte Markdown en HTML Telegram ; texte brut si Telegram refuse le HTML."""
+    for rendered, plain in telegram_messages(text):
+        if rendered is not None:
+            try:
+                await message.reply_text(rendered, parse_mode=ParseMode.HTML)
+                continue
+            except BadRequest:
+                log.warning("Telegram a refusé le HTML : envoi en texte brut")
+        await message.reply_text(plain)
+
+
+async def send_action(message, summary, action_id):
+    """Action en attente, avec ses boutons Confirmer / Annuler."""
+    rendered, plain = action_message(summary)
+    try:
+        await message.reply_text(
+            rendered, parse_mode=ParseMode.HTML, reply_markup=decision_keyboard(action_id)
+        )
+    except BadRequest:
+        log.warning("Telegram a refusé le HTML : envoi en texte brut")
+        await message.reply_text(plain, reply_markup=decision_keyboard(action_id))
 
 
 async def call(context, method, path, telegram_id, payload=None):
@@ -134,14 +159,10 @@ async def forward(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str)
     pending = data.get("pending") or []
     if pending:
         for action in pending:
-            await message.reply_text(
-                f"Action proposée :\n{action['summary']}",
-                reply_markup=decision_keyboard(action["id"]),
-            )
+            await send_action(message, action["summary"], action["id"])
         return
 
-    for part in chunks(data["reply"]):
-        await message.reply_text(part)
+    await send_markdown(message, data["reply"])
 
 
 async def relay(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

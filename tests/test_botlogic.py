@@ -2,14 +2,6 @@
 import botlogic
 
 
-def test_decoupage_des_longs_messages():
-    text = "a" * 9000
-    parts = list(botlogic.chunks(text, 4000))
-    assert [len(p) for p in parts] == [4000, 4000, 1000]
-    assert "".join(parts) == text
-    assert list(botlogic.chunks("court")) == ["court"]
-
-
 def test_boutons_d_historique():
     chats = [
         {"id": 12, "title": "Devis maçonnerie", "updated_at": "2026-10-19T14:20:00+00:00"},

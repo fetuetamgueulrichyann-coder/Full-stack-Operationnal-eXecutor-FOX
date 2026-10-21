@@ -49,7 +49,7 @@ jour de ces deux documents. Dernière mise à jour : 19/10/2026 (phase A2a livr�
 1. Migrations numérotées et sauvegardes (fait, phase 0).
 2. Comptes, sessions, codes d'invitation, rôles propriétaire et testeur (fait, phase A1).
 3. Quotas par utilisateur (fait, phase A1) et par minute (à faire), configurables ; plafond global.
-4. Historique par conversation : consultation, suppression, option « Ne pas enregistrer », purge (fait, phase A2a ; mise en forme des réponses : phase A2b).
+4. Historique par conversation : consultation, suppression, option « Ne pas enregistrer », purge (fait, phase A2a ; mise en forme des réponses : fait, phase A2b).
 5. Agenda interne par utilisateur : fuseau horaire, conflits, outils de même nom que Google.
 6. E-mails : rédaction, amélioration, résumé, lien Gmail prérempli, bouton « Copier ».
 7. Module commercial : clients, devis (lignes, totaux, TVA, numérotation) calculés en Python.

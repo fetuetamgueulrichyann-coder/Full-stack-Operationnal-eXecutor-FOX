@@ -201,25 +201,25 @@ def undo_modifier(args, result):
 
 def describe_creer(args):
     start, end = bounds(args["debut"], args.get("fin"))
-    text = f"Créer l'événement « {args['titre']} » {fmt_range(start, end)}"
+    lines = [f"Créer l'événement « {args['titre']} »", f"Quand : {fmt_range(start, end)}"]
     if args.get("lieu"):
-        text += f" ({args['lieu']})"
-    return text
+        lines.append(f"Lieu : {args['lieu']}")
+    return "\n".join(lines)
 
 
 def describe_modifier(args):
     changes = []
     if args.get("titre"):
-        changes.append(f"nouveau titre « {args['titre']} »")
+        changes.append(f"Nouveau titre : « {args['titre']} »")
     if args.get("debut"):
-        changes.append(f"nouveau début {parse_dt(args['debut']):%d/%m/%Y %H:%M}")
+        changes.append(f"Nouveau début : {parse_dt(args['debut']):%d/%m/%Y %H:%M}")
     if args.get("fin"):
-        changes.append(f"nouvelle fin {parse_dt(args['fin']):%d/%m/%Y %H:%M}")
+        changes.append(f"Nouvelle fin : {parse_dt(args['fin']):%d/%m/%Y %H:%M}")
     if args.get("lieu"):
-        changes.append(f"nouveau lieu « {args['lieu']} »")
+        changes.append(f"Nouveau lieu : {args['lieu']}")
     if not changes:
         raise ValueError("aucune modification demandée")
-    return f"Modifier l'événement « {event_title(args['event_id'])} » : " + ", ".join(changes)
+    return "\n".join([f"Modifier l'événement « {event_title(args['event_id'])} »", *changes])
 
 
 def describe_supprimer(args):

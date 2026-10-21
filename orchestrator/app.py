@@ -10,6 +10,7 @@ from google.genai import errors
 import accounts
 import agent
 import db
+import formatting
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orchestrator")
@@ -262,8 +263,10 @@ def message():
 
     if pending:
         reply = "Action(s) en attente de confirmation :\n" + "\n".join(
-            f"- {p['summary']}" for p in pending
+            "- " + p["summary"].replace("\n", "\n  ") for p in pending
         )
+    elif reply != agent.EMPTY_REPLY:
+        reply = formatting.clean_reply(reply) or agent.EMPTY_REPLY
     chat_id = store_exchange(user_id, private, chat_id, text, reply) if reply != agent.EMPTY_REPLY else chat_id
 
     return jsonify(reply=reply, pending=pending, chat_id=chat_id, private=private)

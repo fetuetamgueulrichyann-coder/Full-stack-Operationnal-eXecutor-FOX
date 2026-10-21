@@ -56,6 +56,12 @@ def test_date_invalide(tools):
 def test_description_de_creation(tools):
     text = tools.describe_creer({"titre": "Réunion", "debut": "2026-10-12T09:00", "lieu": "Douala"})
     assert "Réunion" in text and "12/10/2026" in text and "09:00" in text and "Douala" in text
+    # Une information par ligne : lisible dans Telegram comme dans la future PWA.
+    assert text.split("\n") == [
+        "Créer l'événement « Réunion »",
+        "Quand : le 12/10/2026 de 09:00 à 10:00",
+        "Lieu : Douala",
+    ]
 
 
 def test_modification_sans_changement_refusee(tools):
