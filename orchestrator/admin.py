@@ -51,7 +51,10 @@ def cmd_revoke_invite(args):
 
 def cmd_purge(args):
     result = db.purge_history()  # durées : RETENTION_DAYS_OWNER / RETENTION_DAYS_TESTER
-    print(f"{result['chats']} conversation(s) supprimée(s), {result['private']} contexte(s) privé(s).")
+    print(
+        f"{result['chats']} conversation(s) supprimée(s), {result['private']} contexte(s) privé(s), "
+        f"{result['tasks']} tâche(s) close(s)."
+    )
     return 0
 
 

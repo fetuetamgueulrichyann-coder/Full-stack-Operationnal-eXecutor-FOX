@@ -10,6 +10,7 @@ from google import genai
 from google.genai import errors, types
 
 import db
+import tasks  # noqa: F401  (enregistre les outils de tâches)
 from tools import IRREVERSIBLE, REGISTRY, TZ, TZ_NAME, Tool, register
 
 log = logging.getLogger("agent")
@@ -67,7 +68,9 @@ SYSTEM_PROMPT = (
 )
 
 PROMPT_WITH_TOOLS = (
-    "Utilise les outils disponibles pour consulter ou modifier l'agenda. "
+    "Utilise les outils disponibles pour consulter ou modifier l'agenda et les tâches. "
+    "Quand l'utilisateur te confie une chose à faire ou à retenir, crée une tâche au lieu de seulement la mentionner. "
+    "Pour modifier une tâche, retrouve d'abord son numéro avec lister_taches. "
     "Pour modifier ou supprimer un événement, retrouve d'abord son identifiant avec lire_agenda, "
     "sans jamais inventer d'identifiant. "
     "Les actions d'écriture sont soumises à la confirmation de l'utilisateur : "
@@ -323,7 +326,7 @@ def error_part(name, message):
 
 def run_read_tool(user_id, tool, args):
     try:
-        result = tool.run(**args)
+        result = tool.execute(args, user_id)
     except Exception as exc:
         log.exception("echec de l'outil %s", tool.name)
         db.audit(user_id, "failed", tool.name, {"args": args, "mode": "direct"})
@@ -403,7 +406,7 @@ def chat(user_id, text, role="owner", chat_id=None, private=False):
                 parts.append(run_read_tool(user_id, tool, args))
             else:
                 try:
-                    summary = tool.describe(args)
+                    summary = tool.summarize(args, user_id)
                 except Exception as exc:
                     parts.append(error_part(call.name, f"parametres invalides : {exc}"))
                     continue
@@ -450,7 +453,7 @@ def resolve_action(user_id, action_id, confirm, role="owner"):
         return "Cet outil n'est plus disponible."
 
     try:
-        result = tool.run(**args)
+        result = tool.execute(args, user_id)
     except Exception:
         log.exception("echec de l'action %s", action_id)
         db.finish_pending(action_id, "failed")

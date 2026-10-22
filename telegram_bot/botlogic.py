@@ -223,6 +223,46 @@ def history_buttons(chats, current_id=None):
     return buttons
 
 
+MAX_TASKS_SHOWN = 10
+
+
+def due_label(iso):
+    """« 2026-10-25T23:59+01:00 » -> « 25/10 » ; avec l'heure si elle n'est pas 23:59."""
+    if not iso:
+        return ""
+    label = short_date(iso)
+    time = str(iso)[11:16]
+    return f"{label} {time}" if time and time != "23:59" else label
+
+
+def tasks_message(tasks):
+    """Liste des tâches ouvertes, en Markdown (rendu ensuite par telegram_messages)."""
+    if not tasks:
+        return "Aucune tâche en cours. Ajoute-en une avec /tache titre | échéance | priorité."
+    lines = [f"**Tes tâches ({len(tasks)})**"]
+    for task in tasks[:MAX_TASKS_SHOWN]:
+        details = []
+        if task.get("due_at"):
+            details.append(("en retard · " if task.get("overdue") else "pour le ") + due_label(task["due_at"]))
+        if task.get("priority") in ("haute", "basse"):
+            details.append(f"priorité {task['priority']}")
+        if task.get("status") == "en_cours":
+            details.append("en cours")
+        suffix = f" ({', '.join(details)})" if details else ""
+        lines.append(f"- **#{task['id']}** {task['title']}{suffix}")
+    if len(tasks) > MAX_TASKS_SHOWN:
+        lines.append(f"… et {len(tasks) - MAX_TASKS_SHOWN} autre(s).")
+    return "\n".join(lines)
+
+
+def task_buttons(tasks):
+    """Une ligne par tâche affichée : [Terminer #id, Annuler #id] -> callbacks tdone:/tcancel:."""
+    return [
+        [(f"Terminer #{t['id']}", f"tdone:{t['id']}"), (f"Annuler #{t['id']}", f"tcancel:{t['id']}")]
+        for t in tasks[:MAX_TASKS_SHOWN]
+    ]
+
+
 def start_code(args):
     """Code d'invitation fourni avec /start (le reste du texte est ignoré), sinon None."""
     return " ".join(args).strip() if args else None

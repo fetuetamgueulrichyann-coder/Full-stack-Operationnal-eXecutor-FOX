@@ -117,6 +117,8 @@ TITLE_MAX_CHARS = 40
 # Conversations inactives supprimées après N jours (0 = jamais), selon le rôle.
 RETENTION_DAYS_OWNER = int(os.environ.get("RETENTION_DAYS_OWNER", "90"))
 RETENTION_DAYS_TESTER = int(os.environ.get("RETENTION_DAYS_TESTER", "30"))
+MAX_OPEN_TASKS = int(os.environ.get("MAX_OPEN_TASKS", "50"))
+TASK_RETENTION_DAYS = int(os.environ.get("TASK_RETENTION_DAYS", "90"))  # tâches closées ; 0 = jamais
 
 
 def make_title(text):
@@ -319,7 +321,7 @@ def load_private_history(user_id, limit):
 def purge_history(owner_days=None, tester_days=None):
     """Supprime les conversations inactives depuis trop longtemps (0 = ne jamais purger).
 
-    Retourne {"chats": n, "private": m}. Le contexte du mode privé de plus de
+    Retourne {"chats": n, "private": m, "tasks": t}. Le contexte du mode privé de plus de
     PRIVATE_CONTEXT_MINUTES minutes est toujours supprimé.
     """
     owner_days = RETENTION_DAYS_OWNER if owner_days is None else owner_days
@@ -342,7 +344,138 @@ def purge_history(owner_days=None, tester_days=None):
             (PRIVATE_CONTEXT_MINUTES,),
         )
         private = cur.rowcount
-    return {"chats": deleted, "private": private}
+    return {"chats": deleted, "private": private, "tasks": purge_closed_tasks()}
+
+
+# --- Tâches ----------------------------------------------------------------
+OPEN_STATUSES = ("a_faire", "en_cours")
+CLOSED_STATUSES = ("terminee", "annulee")
+_UNSET = object()
+
+
+class TaskLimit(Exception):
+    """Trop de tâches ouvertes pour cet utilisateur."""
+
+
+_TASK_COLUMNS = (
+    "id, title, priority, due_at, status, created_at, updated_at, done_at, "
+    "(due_at IS NOT NULL AND due_at < now() AND status IN ('a_faire', 'en_cours'))"
+)
+
+
+def _task(row):
+    return {
+        "id": row[0], "title": row[1], "priority": row[2], "due_at": row[3], "status": row[4],
+        "created_at": row[5], "updated_at": row[6], "done_at": row[7], "overdue": bool(row[8]),
+    }
+
+
+def _lock_tasks(cur, user_id):
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"tasks:{user_id}",))
+
+
+def _open_count(cur, user_id):
+    cur.execute(
+        "SELECT count(*) FROM tasks WHERE user_id = %s AND status IN ('a_faire', 'en_cours')",
+        (user_id,),
+    )
+    return cur.fetchone()[0]
+
+
+def create_task(user_id, title, priority="normale", due_at=None, max_open=None):
+    max_open = MAX_OPEN_TASKS if max_open is None else max_open
+    with cursor() as cur:
+        _lock_tasks(cur, user_id)
+        if max_open and _open_count(cur, user_id) >= max_open:
+            raise TaskLimit(max_open)
+        cur.execute(
+            f"INSERT INTO tasks (user_id, title, priority, due_at) VALUES (%s, %s, %s, %s) "
+            f"RETURNING {_TASK_COLUMNS}",  # noqa: S608 (colonnes fixes)
+            (user_id, title, priority, due_at),
+        )
+        return _task(cur.fetchone())
+
+
+def list_tasks(user_id, statuses=OPEN_STATUSES, limit=50):
+    """En retard d'abord, puis par échéance, puis les tâches sans échéance (priorité haute en premier)."""
+    with cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT {_TASK_COLUMNS} FROM tasks
+            WHERE user_id = %s AND status = ANY(%s)
+            ORDER BY (due_at IS NOT NULL AND due_at < now() AND status IN ('a_faire', 'en_cours')) DESC,
+                     (due_at IS NULL), due_at,
+                     CASE priority WHEN 'haute' THEN 0 WHEN 'normale' THEN 1 ELSE 2 END,
+                     id
+            LIMIT %s
+            """,  # noqa: S608 (colonnes fixes)
+            (user_id, list(statuses), limit),
+        )
+        return [_task(r) for r in cur.fetchall()]
+
+
+def get_task(user_id, task_id):
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_TASK_COLUMNS} FROM tasks WHERE id = %s AND user_id = %s",  # noqa: S608
+            (task_id, user_id),
+        )
+        row = cur.fetchone()
+    return _task(row) if row else None
+
+
+def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, status=None, max_open=None):
+    """Modifie une tâche de cet utilisateur. due_at=None efface l'échéance. None si introuvable."""
+    max_open = MAX_OPEN_TASKS if max_open is None else max_open
+    with cursor() as cur:
+        _lock_tasks(cur, user_id)
+        cur.execute("SELECT status FROM tasks WHERE id = %s AND user_id = %s FOR UPDATE", (task_id, user_id))
+        current = cur.fetchone()
+        if current is None:
+            return None
+        if status in OPEN_STATUSES and current[0] in CLOSED_STATUSES:
+            if max_open and _open_count(cur, user_id) >= max_open:
+                raise TaskLimit(max_open)
+        sets, values = ["updated_at = now()"], []
+        if title is not None:
+            sets.append("title = %s")
+            values.append(title)
+        if priority is not None:
+            sets.append("priority = %s")
+            values.append(priority)
+        if due_at is not _UNSET:
+            sets.append("due_at = %s")
+            values.append(due_at)
+        if status is not None:
+            sets.append("status = %s")
+            values.append(status)
+            sets.append("done_at = now()" if status == "terminee" else "done_at = NULL")
+        cur.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = %s AND user_id = %s "  # noqa: S608 (fragments fixes)
+            f"RETURNING {_TASK_COLUMNS}",
+            (*values, task_id, user_id),
+        )
+        return _task(cur.fetchone())
+
+
+def delete_task(user_id, task_id):
+    with cursor() as cur:
+        cur.execute("DELETE FROM tasks WHERE id = %s AND user_id = %s", (task_id, user_id))
+        return cur.rowcount > 0
+
+
+def purge_closed_tasks(days=None):
+    """Supprime les tâches terminées ou annulées depuis plus de `days` jours (0 = jamais)."""
+    days = TASK_RETENTION_DAYS if days is None else days
+    if not days or days <= 0:
+        return 0
+    with cursor() as cur:
+        cur.execute(
+            "DELETE FROM tasks WHERE status IN ('terminee', 'annulee') "
+            "AND updated_at < now() - make_interval(days => %s)",
+            (days,),
+        )
+        return cur.rowcount
 
 
 # --- Journal d'audit ---------------------------------------------------------

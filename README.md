@@ -152,6 +152,13 @@ plus une fois par heure, à l'usage, ou à la demande avec `admin.py purge`.
 `POST /private` avec `{"on": true|false}`, `POST /message` avec un `chat_id` facultatif
 (le mode privé l'emporte toujours), `POST /auth/telegram` (réservé au bot).
 
+## Qualité d'écriture et mise en forme des réponses (phase A2b)
+
+- **Style** : le prompt demande des réponses courtes, sans préambule ni emojis (sauf si l'utilisateur en emploie), sans tableau ni LaTeX.
+- **Nettoyage** (`orchestrator/formatting.py`) : les formules LaTeX restantes sont converties en notation lisible (`\sqrt{\pi}` → `√π`, `r^2` → `r²`, `\frac{1}{2}` → `1/2`), les espaces sont normalisés. Les blocs de code ne sont jamais modifiés, les commandes inconnues sont laissées telles quelles. L'historique garde le texte nettoyé. `FORMAT_REPLIES=0` désactive ce nettoyage.
+- **Telegram** : le Markdown de FOX est converti en HTML Telegram (gras, italique, code, liens http/https). Tout texte est échappé ; si Telegram refuse le HTML, le message est renvoyé en texte brut. Les longs messages sont coupés aux paragraphes, sans couper un bloc de code.
+- **Actions à confirmer** : titre en gras, une information par ligne (« Quand : », « Lieu : »...).
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

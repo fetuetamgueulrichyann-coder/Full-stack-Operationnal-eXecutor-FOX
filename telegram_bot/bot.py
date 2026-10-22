@@ -19,7 +19,15 @@ from telegram.ext import (
     filters,
 )
 
-from botlogic import UnknownUsers, action_message, history_buttons, start_code, telegram_messages
+from botlogic import (
+    UnknownUsers,
+    action_message,
+    history_buttons,
+    start_code,
+    task_buttons,
+    tasks_message,
+    telegram_messages,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -41,6 +49,8 @@ HELP = (
     "/historique : reprendre une conversation précédente\n"
     "/effacer : supprimer une conversation ou tout l'historique\n"
     "/prive : mode « ne pas enregistrer » (rien n'est conservé)\n"
+    "/taches : voir tes tâches en cours\n"
+    "/tache titre | échéance | priorité : ajouter une tâche (échéance et priorité facultatives)\n"
     "/annuler : annuler la dernière action effectuée"
 )
 COMMANDS = [
@@ -48,6 +58,8 @@ COMMANDS = [
     BotCommand("historique", "Reprendre une conversation"),
     BotCommand("effacer", "Supprimer l'historique"),
     BotCommand("prive", "Mode ne pas enregistrer"),
+    BotCommand("taches", "Voir mes tâches"),
+    BotCommand("tache", "Ajouter une tâche"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
 ]
@@ -290,6 +302,81 @@ async def private_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
 
+async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    response = await simple_call(update, context, "GET", "/tasks")
+    if response is None:
+        return
+    tasks = response.json()["tasks"]
+    text = tasks_message(tasks)
+    markup = keyboard(task_buttons(tasks)) if tasks else None
+    parts = telegram_messages(text)
+    for index, (rendered, plain) in enumerate(parts):
+        last = index == len(parts) - 1
+        try:
+            await update.effective_message.reply_text(
+                rendered or plain, parse_mode=ParseMode.HTML if rendered else None,
+                reply_markup=markup if last else None,
+            )
+        except BadRequest:
+            await update.effective_message.reply_text(plain, reply_markup=markup if last else None)
+
+
+async def add_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await message.reply_text("Écris la tâche après la commande, par exemple :\n/tache Appeler le fournisseur | 25/10 | haute")
+        return
+    user_id = update.effective_user.id
+    if unknown(context).is_quiet(user_id):
+        await message.reply_text(NO_ACCOUNT)
+        return
+    try:
+        response = await call(context, "POST", "/tasks", user_id, {"text": text})
+    except httpx.HTTPError:
+        log.exception("echec de la requete vers l'orchestrateur")
+        await message.reply_text(UNAVAILABLE)
+        return
+    if response.status_code == 403:
+        await refuse_unknown(update, context)
+    elif response.status_code in (400, 409):
+        await message.reply_text(response.json().get("error", "Tâche refusée."))
+    elif response.status_code >= 400:
+        log.error("Réponse inattendue de l'orchestrateur (%s) pour /tasks", response.status_code)
+        await message.reply_text(UNAVAILABLE)
+    else:
+        task = response.json()["task"]
+        await message.reply_text(f"Tâche n°{task['id']} ajoutée. /taches pour les voir.")
+
+
+async def on_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Boutons Terminer / Annuler de la liste des tâches."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    action, _, value = (query.data or "").partition(":")
+    status = "terminee" if action == "tdone" else "annulee"
+    if unknown(context).is_quiet(user_id):
+        await query.message.reply_text(NO_ACCOUNT)
+        return
+    try:
+        response = await call(context, "PATCH", f"/tasks/{int(value)}", user_id, {"status": status})
+    except httpx.HTTPError:
+        log.exception("echec de la mise à jour de la tâche")
+        await query.message.reply_text(UNAVAILABLE)
+        return
+    if response.status_code == 403:
+        unknown(context).mark(user_id)
+        await query.message.reply_text(NO_ACCOUNT)
+    elif response.status_code == 404:
+        await query.message.reply_text(f"La tâche #{int(value)} n'existe plus.")
+    elif response.status_code >= 400:
+        await query.message.reply_text(UNAVAILABLE)
+    else:
+        verb = "terminée" if status == "terminee" else "annulée"
+        await query.message.reply_text(f"Tâche #{int(value)} {verb}. /taches pour la liste à jour.")
+
+
 async def on_manage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Boutons de gestion des conversations (reprendre, supprimer)."""
     query = update.callback_query
@@ -398,12 +485,15 @@ def main() -> None:
         ("historique", history_command),
         ("effacer", erase_command),
         ("prive", private_command),
+        ("taches", tasks_command),
+        ("tache", add_task_command),
         ("annuler", undo_command),
     ):
         application.add_handler(CommandHandler(name, handler, filters=private))
     application.add_handler(
         CallbackQueryHandler(on_decision, pattern=r"^(ok|no):[0-9a-fA-F-]{36}$")
     )
+    application.add_handler(CallbackQueryHandler(on_task_button, pattern=r"^(tdone|tcancel):[0-9]{1,18}$"))
     application.add_handler(
         CallbackQueryHandler(on_manage, pattern=r"^(open:[0-9]{1,18}|del:[0-9]{1,18}|delall|delall_ok|keep)$")
     )

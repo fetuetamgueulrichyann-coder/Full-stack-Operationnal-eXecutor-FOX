@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,11 +365,11 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
-    for data in ("open:9", "del:9", "delall", "delall_ok", "keep", uuid_data):
+    for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
-    for data in ("open:abc", "del:", "delall_ok2", "open:1; DROP", "ok:123"):
+    for data in ("open:abc", "del:", "delall_ok2", "open:1; DROP", "ok:123", "tdone:", "tdone:1x", "tcancel:abc"):
         assert not any(p.match(data) for p in patterns), data
 
 
@@ -435,3 +435,114 @@ def test_action_en_attente_repli_texte_brut_garde_les_boutons(server, context):
     text, markup = msg.replies[0]
     assert text == "Action proposée :\nCréer A"
     assert buttons(markup)[0][0][1] == f"ok:{action}"
+
+
+# --- Tâches (phase B1) --------------------------------------------------------------
+TASKS = [
+    {"id": 3, "title": "Payer la facture", "due_at": "2026-10-20T23:59+01:00", "overdue": True,
+     "priority": "haute", "status": "a_faire"},
+    {"id": 5, "title": "Appeler Paul", "due_at": None, "overdue": False, "priority": "normale", "status": "a_faire"},
+]
+
+
+def test_taches_liste_avec_boutons(server, context):
+    server.routes[("GET", "/tasks")] = Response(200, {"tasks": TASKS})
+    upd, msg = update()
+    run(bot.tasks_command(upd, context))
+    text, markup = msg.replies[0]
+    assert "<b>Tes tâches (2)</b>" in text and "<b>#3</b> Payer la facture (en retard · 20/10, priorité haute)" in text
+    assert buttons(markup) == [
+        [("Terminer #3", "tdone:3"), ("Annuler #3", "tcancel:3")],
+        [("Terminer #5", "tdone:5"), ("Annuler #5", "tcancel:5")],
+    ]
+    assert server.calls == [("GET", "/tasks", 900, None)]
+
+
+def test_taches_vide_sans_boutons(server, context):
+    server.routes[("GET", "/tasks")] = Response(200, {"tasks": []})
+    upd, msg = update()
+    run(bot.tasks_command(upd, context))
+    text, markup = msg.replies[0]
+    assert "Aucune tâche" in text and markup is None
+
+
+def test_taches_repli_texte_brut_garde_les_boutons(server, context):
+    server.routes[("GET", "/tasks")] = Response(200, {"tasks": TASKS})
+    upd, msg = update()
+    msg.refuse_html = True
+    run(bot.tasks_command(upd, context))
+    text, markup = msg.replies[0]
+    assert "<b>" not in text and "Payer la facture" in text and markup is not None
+
+
+def test_taches_inconnu_refuse(server, context):
+    server.routes[("GET", "/tasks")] = Response(403)
+    upd, msg = update(user_id=555)
+    run(bot.tasks_command(upd, context))
+    assert msg.replies == [(bot.NO_ACCOUNT, None)]
+
+
+def test_ajout_rapide(server, context):
+    server.routes[("POST", "/tasks")] = Response(201, {"task": {"id": 7}})
+    upd, msg = update()
+    context.args = ["Appeler", "Paul", "|", "25/10", "|", "haute"]
+    run(bot.add_task_command(upd, context))
+    assert server.calls == [("POST", "/tasks", 900, {"text": "Appeler Paul | 25/10 | haute"})]
+    assert "n°7" in msg.replies[0][0]
+
+
+def test_ajout_sans_texte_explique_la_syntaxe(server, context):
+    upd, msg = update()
+    run(bot.add_task_command(upd, context))
+    assert server.calls == [] and "/tache" in msg.replies[0][0] and "|" in msg.replies[0][0]
+
+
+@pytest.mark.parametrize("status", [400, 409])
+def test_ajout_refuse_affiche_le_message_du_serveur(server, context, status):
+    server.routes[("POST", "/tasks")] = Response(status, {"error": "Échéance non reconnue : « x »."})
+    upd, msg = update()
+    context.args = ["a", "|", "x"]
+    run(bot.add_task_command(upd, context))
+    assert msg.replies == [("Échéance non reconnue : « x ».", None)]
+
+
+def test_ajout_serveur_indisponible(server, context):
+    server.routes[("POST", "/tasks")] = bot.httpx.ConnectError("hors ligne")
+    upd, msg = update()
+    context.args = ["x"]
+    run(bot.add_task_command(upd, context))
+    assert msg.replies == [(bot.UNAVAILABLE, None)]
+
+
+class ButtonQuery(Query):
+    def __init__(self, data, user_id=900):
+        super().__init__(data, user_id)
+        self.message = Message()
+
+
+@pytest.mark.parametrize("data, status, word", [("tdone:12", "terminee", "terminée"), ("tcancel:12", "annulee", "annulée")])
+def test_boutons_terminer_et_annuler(server, context, data, status, word):
+    server.routes[("PATCH", "/tasks/12")] = Response(200, {"task": {"id": 12}})
+    query = ButtonQuery(data)
+    run(bot.on_task_button(SimpleNamespace(callback_query=query), context))
+    assert server.calls == [("PATCH", "/tasks/12", 900, {"status": status})]
+    assert query.answered and f"Tâche #12 {word}" in query.message.replies[0][0]
+
+
+def test_bouton_sur_une_tache_disparue(server, context):
+    server.routes[("PATCH", "/tasks/12")] = Response(404)
+    query = ButtonQuery("tdone:12")
+    run(bot.on_task_button(SimpleNamespace(callback_query=query), context))
+    assert "n'existe plus" in query.message.replies[0][0]
+
+
+def test_bouton_d_un_compte_inconnu(server, context):
+    server.routes[("PATCH", "/tasks/12")] = Response(403)
+    query = ButtonQuery("tdone:12", user_id=555)
+    run(bot.on_task_button(SimpleNamespace(callback_query=query), context))
+    assert query.message.replies[0][0] == bot.NO_ACCOUNT and context.application.bot_data["unknown"].is_quiet(555)
+
+
+def test_commandes_declarees_et_aide():
+    assert {"taches", "tache"} <= {c.command for c in bot.COMMANDS}
+    assert "/taches" in bot.HELP and "/tache " in bot.HELP

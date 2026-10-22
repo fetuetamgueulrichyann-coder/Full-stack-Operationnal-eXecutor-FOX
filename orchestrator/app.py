@@ -11,6 +11,7 @@ import accounts
 import agent
 import db
 import formatting
+import tasks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orchestrator")
@@ -62,8 +63,11 @@ def maybe_purge():
     except Exception:
         log.exception("echec de la purge de l'historique")
         return
-    if result["chats"] or result["private"]:
-        log.info("Purge : %s conversation(s), %s contexte(s) privé(s)", result["chats"], result["private"])
+    if result["chats"] or result["private"] or result["tasks"]:
+        log.info(
+            "Purge : %s conversation(s), %s contexte(s) privé(s), %s tâche(s) close(s)",
+            result["chats"], result["private"], result["tasks"],
+        )
 
 
 def user_limits(role):
@@ -374,3 +378,89 @@ def private_mode():
     db.set_private(user["id"], on)
     db.audit(user["id"], "private_on" if on else "private_off", None, {})
     return jsonify(private=on)
+
+
+# --- Tâches ----------------------------------------------------------------------
+def task_error(exc):
+    return jsonify(error=str(exc)), 400
+
+
+@app.get("/tasks")
+def tasks_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    scope = request.args.get("status", "open")
+    if scope == "open":
+        statuses = db.OPEN_STATUSES
+    elif scope == "all":
+        statuses = tasks.STATUSES
+    else:
+        try:
+            statuses = (tasks.clean_status(scope),)
+        except tasks.TaskInputError as exc:
+            return task_error(exc)
+    items = db.list_tasks(user["id"], statuses)
+    return jsonify(tasks=[tasks.public(t) for t in items])
+
+
+@app.post("/tasks")
+def tasks_create():
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    try:
+        if "text" in data:  # saisie rapide : « titre | échéance | priorité »
+            title, priority, due = tasks.parse_quick(data["text"])
+        else:
+            title = tasks.clean_title(data.get("title"))
+            priority = tasks.clean_priority(data.get("priority", "normale"))
+            due = tasks.parse_due(data["due"]) if data.get("due") else None
+        task = db.create_task(user["id"], title, priority, due)
+    except tasks.TaskInputError as exc:
+        return task_error(exc)
+    except db.TaskLimit as exc:
+        return jsonify(error=f"limite de {exc.args[0]} tâches ouvertes atteinte"), 409
+    db.audit(user["id"], "task_created", None, {"task_id": task["id"], "mode": "direct"})
+    return jsonify(task=tasks.public(task)), 201
+
+
+@app.patch("/tasks/<int:task_id>")
+def tasks_update(task_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    changes = {}
+    try:
+        if "title" in data:
+            changes["title"] = tasks.clean_title(data["title"])
+        if "priority" in data:
+            changes["priority"] = tasks.clean_priority(data["priority"])
+        if "status" in data:
+            changes["status"] = tasks.clean_status(data["status"])
+        if "due" in data:
+            changes["due_at"] = tasks.parse_due(data["due"]) if data["due"] else None
+        if not changes:
+            return jsonify(error="aucune modification demandée"), 400
+        task = db.update_task(user["id"], task_id, **changes)
+    except tasks.TaskInputError as exc:
+        return task_error(exc)
+    except db.TaskLimit as exc:
+        return jsonify(error=f"limite de {exc.args[0]} tâches ouvertes atteinte"), 409
+    if task is None:
+        return jsonify(error="tâche introuvable"), 404
+    db.audit(user["id"], "task_updated", None, {"task_id": task_id, "fields": sorted(changes)})
+    return jsonify(task=tasks.public(task))
+
+
+@app.delete("/tasks/<int:task_id>")
+def tasks_delete(task_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.delete_task(user["id"], task_id):
+        return jsonify(error="tâche introuvable"), 404
+    db.audit(user["id"], "task_deleted", None, {"task_id": task_id})
+    return jsonify(status="deleted")

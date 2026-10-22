@@ -179,7 +179,7 @@ def clean_tables():
         cur.execute(
             "TRUNCATE conversations, api_usage, pending_actions, audit_log, users, sessions, "
             "invitation_codes, auth_attempts, user_usage, provider_usage, chats, private_mode, "
-            "private_context RESTART IDENTITY CASCADE"
+            "private_context, tasks RESTART IDENTITY CASCADE"
         )
     conn.close()
 

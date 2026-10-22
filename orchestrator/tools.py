@@ -28,6 +28,18 @@ class Tool:
     expose: bool = True
     # Rôles autorisés à utiliser l'outil (vérifié à la proposition ET à l'exécution).
     roles: tuple = ("owner", "tester")
+    # Outil propre à un utilisateur : run(...) et describe(args, ...) reçoivent `user_id`.
+    needs_user: bool = False
+
+    def execute(self, args, user_id):
+        """Exécute l'outil. Un outil « needs_user » reçoit l'utilisateur, jamais fourni par le modèle."""
+        if not self.needs_user:
+            return self.run(**args)
+        return self.run(**{k: v for k, v in args.items() if k != "user_id"}, user_id=user_id)
+
+    def summarize(self, args, user_id):
+        """Texte décrivant l'action à confirmer."""
+        return self.describe(args, user_id) if self.needs_user else self.describe(args)
 
     def allowed_for(self, role) -> bool:
         return role in self.roles
