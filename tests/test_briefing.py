@@ -162,6 +162,13 @@ def test_agenda_en_panne_est_signale(db, briefing, tools, alice, now, monkeypatc
     assert "Agenda indisponible pour le moment." in text and "Google indisponible" not in text
 
 
+def test_la_cause_de_la_panne_d_agenda_est_dans_les_journaux(db, briefing, tools, alice, now, monkeypatch, caplog):
+    fake_agenda(tools, monkeypatch, error=RuntimeError("invalid_grant: Token has been expired or revoked."))
+    with caplog.at_level("WARNING", logger="orchestrator.briefing"):
+        briefing.build(alice, "owner", now)
+    assert "Agenda indisponible pour le briefing : RuntimeError: invalid_grant" in caplog.text
+
+
 def test_pas_d_agenda_pour_un_testeur(db, briefing, tools, friend, now, monkeypatch):
     calls = fake_agenda(tools, monkeypatch, [{"titre": "Privé", "debut": "2026-10-22T09:00", "fin": "2026-10-22T10:00"}])
     assert "Privé" not in briefing.build(friend, "tester", now) and calls == []

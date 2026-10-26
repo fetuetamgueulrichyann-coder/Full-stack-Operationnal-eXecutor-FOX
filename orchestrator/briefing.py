@@ -2,12 +2,15 @@
 
 Texte construit par le code, sans appel au modèle : il ne consomme aucun quota et ne peut rien inventer.
 """
+import logging
 import re
 from datetime import datetime, timedelta
 
 import db
 import tasks
 from tools import REGISTRY, TZ
+
+log = logging.getLogger("orchestrator.briefing")
 
 DAYS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 MAX_LINES = 8
@@ -49,7 +52,9 @@ def agenda_events(role, now):
         return None
     try:
         return tool.run(date_debut=now.strftime("%Y-%m-%d"))
-    except Exception:
+    except Exception as exc:
+        # Cause visible dans les journaux (type et début du message, jamais de secret) ; le texte du briefing reste générique.
+        log.warning("Agenda indisponible pour le briefing : %s: %s", type(exc).__name__, str(exc)[:200])
         return False  # configuré mais en panne : on le dit au lieu de l'ignorer
 
 
