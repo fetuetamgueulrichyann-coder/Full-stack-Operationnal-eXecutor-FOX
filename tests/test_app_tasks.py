@@ -176,7 +176,7 @@ def test_creer_une_tache_par_l_agent_passe_par_la_confirmation(agent, db, owner,
     assert reply == "Action en attente de confirmation."
     assert pending[0]["summary"] == "Créer la tâche « Relancer Paul »\nÉchéance : 01/12/2026"
     assert db.list_tasks(owner["id"]) == []  # rien n'est créé avant la confirmation
-    assert agent.resolve_action(owner["id"], pending[0]["id"], True, "owner").startswith("Tâche créée (n°")
+    assert agent.resolve_action(owner["id"], pending[0]["id"], True, "owner")== "Tâche créée."
     assert [t["title"] for t in db.list_tasks(owner["id"])] == ["Relancer Paul"]
 
 

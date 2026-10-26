@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,11 +365,11 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
-    for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", uuid_data):
+    for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
-    for data in ("open:abc", "del:", "delall_ok2", "open:1; DROP", "ok:123", "tdone:", "tdone:1x", "tcancel:abc"):
+    for data in ("open:abc", "del:", "delall_ok2", "open:1; DROP", "ok:123", "tdone:", "tdone:1x", "tcancel:abc", "mdel:", "mdel:x", "mall2"):
         assert not any(p.match(data) for p in patterns), data
 
 
@@ -450,10 +450,10 @@ def test_taches_liste_avec_boutons(server, context):
     upd, msg = update()
     run(bot.tasks_command(upd, context))
     text, markup = msg.replies[0]
-    assert "<b>Tes tâches (2)</b>" in text and "<b>#3</b> Payer la facture (en retard · 20/10, priorité haute)" in text
+    assert "<b>Tes tâches (2)</b>" in text and "1. Payer la facture (en retard · 20/10, priorité haute)" in text
     assert buttons(markup) == [
-        [("Terminer #3", "tdone:3"), ("Annuler #3", "tcancel:3")],
-        [("Terminer #5", "tdone:5"), ("Annuler #5", "tcancel:5")],
+        [("Terminer 1", "tdone:3"), ("Annuler 1", "tcancel:3")],
+        [("Terminer 2", "tdone:5"), ("Annuler 2", "tcancel:5")],
     ]
     assert server.calls == [("GET", "/tasks", 900, None)]
 
@@ -488,7 +488,7 @@ def test_ajout_rapide(server, context):
     context.args = ["Appeler", "Paul", "|", "25/10", "|", "haute"]
     run(bot.add_task_command(upd, context))
     assert server.calls == [("POST", "/tasks", 900, {"text": "Appeler Paul | 25/10 | haute"})]
-    assert "n°7" in msg.replies[0][0]
+    assert msg.replies[0][0] == "Tâche ajoutée. /taches pour les voir."
 
 
 def test_ajout_sans_texte_explique_la_syntaxe(server, context):
@@ -543,6 +543,285 @@ def test_bouton_d_un_compte_inconnu(server, context):
     assert query.message.replies[0][0] == bot.NO_ACCOUNT and context.application.bot_data["unknown"].is_quiet(555)
 
 
+def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
+    server.routes[("POST", "/tasks")] = Response(201, {"task": {"id": 57}})
+    upd, msg = update()
+    context.args = ["x"]
+    run(bot.add_task_command(upd, context))
+    assert "57" not in msg.replies[0][0]
+
+
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache"} <= {c.command for c in bot.COMMANDS}
-    assert "/taches" in bot.HELP and "/tache " in bot.HELP
+    assert {"taches", "tache", "memoire", "retiens", "journal"} <= {c.command for c in bot.COMMANDS}
+    for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal"):
+        assert command in bot.HELP
+
+
+# --- Mémoire, journal, rappels (phase B2) ----------------------------------------------
+ITEMS = [{"id": 31, "content": "Je préfère les réunions le matin"}, {"id": 12, "content": "Projet : cabinet <Douala>"}]
+
+
+class EditQuery(Query):
+    """Bouton avec message modifiable ; garde aussi le mode d'analyse utilisé."""
+
+    def __init__(self, data, user_id=900):
+        super().__init__(data, user_id)
+        self.modes = []
+        self.refuse_html = False
+
+    async def edit_message_text(self, text, reply_markup=None, parse_mode=None):
+        if self.refuse_html and parse_mode is not None:
+            raise bot.BadRequest("Can't parse entities")
+        self.edits.append((text, reply_markup))
+        self.modes.append(parse_mode)
+
+
+def test_memoire_liste_avec_boutons(server, context):
+    server.routes[("GET", "/memory")] = Response(200, {"items": ITEMS, "private": False})
+    upd, msg = update()
+    run(bot.memory_command(upd, context))
+    text, markup = msg.replies[0]
+    assert "<b>Ce que je retiens (2)</b>" in text and "1. Je préfère les réunions le matin" in text
+    assert "cabinet &lt;Douala&gt;" in text  # le contenu est échappé
+    assert buttons(markup) == [[("Oublier 1", "mdel:31")], [("Oublier 2", "mdel:12")], [("Tout effacer", "mall")]]
+
+
+def test_memoire_vide(server, context):
+    server.routes[("GET", "/memory")] = Response(200, {"items": [], "private": False})
+    upd, msg = update()
+    run(bot.memory_command(upd, context))
+    assert "/retiens" in msg.replies[0][0] and msg.replies[0][1] is None
+
+
+def test_memoire_effacer_demande_confirmation(server, context):
+    server.routes[("GET", "/memory")] = Response(200, {"items": ITEMS, "private": False})
+    upd, msg = update()
+    context.args = ["effacer"]
+    run(bot.memory_command(upd, context))
+    text, markup = msg.replies[0]
+    assert "TOUTE la mémoire" in text and buttons(markup) == [[("Oui, tout effacer", "mall_ok"), ("Annuler", "keep")]]
+    assert [c[0] for c in server.calls] == ["GET"]  # rien n'est supprimé avant le clic
+
+
+def test_memoire_effacer_quand_rien_a_effacer(server, context):
+    server.routes[("GET", "/memory")] = Response(200, {"items": [], "private": False})
+    upd, msg = update()
+    context.args = ["effacer"]
+    run(bot.memory_command(upd, context))
+    assert "Je ne retiens rien" in msg.replies[0][0]
+
+
+def test_memoire_inconnu_refuse(server, context):
+    server.routes[("GET", "/memory")] = Response(403)
+    upd, msg = update(user_id=555)
+    run(bot.memory_command(upd, context))
+    assert msg.replies == [(bot.NO_ACCOUNT, None)]
+
+
+def test_retiens(server, context):
+    server.routes[("POST", "/memory")] = Response(201, {"item": {"id": 3}})
+    upd, msg = update()
+    context.args = ["Je", "préfère", "le", "matin"]
+    run(bot.remember_command(upd, context))
+    assert server.calls == [("POST", "/memory", 900, {"text": "Je préfère le matin"})]
+    assert msg.replies[0][0].startswith("C'est noté.")
+
+
+def test_retiens_sans_texte(server, context):
+    upd, msg = update()
+    run(bot.remember_command(upd, context))
+    assert server.calls == [] and "/retiens" in msg.replies[0][0]
+
+
+@pytest.mark.parametrize("status", [400, 409])
+def test_retiens_refuse_affiche_le_message_du_serveur(server, context, status):
+    server.routes[("POST", "/memory")] = Response(status, {"error": "Le mode privé est actif."})
+    upd, msg = update()
+    context.args = ["x"]
+    run(bot.remember_command(upd, context))
+    assert msg.replies == [("Le mode privé est actif.", None)]
+
+
+def test_retiens_serveur_indisponible(server, context):
+    server.routes[("POST", "/memory")] = bot.httpx.ConnectError("hors ligne")
+    upd, msg = update()
+    context.args = ["x"]
+    run(bot.remember_command(upd, context))
+    assert msg.replies == [(bot.UNAVAILABLE, None)]
+
+
+def test_oublier_un_element_met_la_liste_a_jour_sur_place(server, context):
+    server.routes[("DELETE", "/memory/31")] = Response(200, {"status": "deleted"})
+    server.routes[("GET", "/memory")] = Response(200, {"items": [ITEMS[1]], "private": False})
+    query = EditQuery("mdel:31")
+    run(bot.on_memory_button(SimpleNamespace(callback_query=query), context))
+    assert [c[:2] for c in server.calls] == [("DELETE", "/memory/31"), ("GET", "/memory")]
+    text, markup = query.edits[0]
+    assert "(1)" in text and "Je préfère" not in text
+    assert buttons(markup) == [[("Oublier 1", "mdel:12")], [("Tout effacer", "mall")]]
+
+
+def test_oublier_un_element_deja_supprime_actualise_quand_meme(server, context):
+    server.routes[("DELETE", "/memory/31")] = Response(404)
+    server.routes[("GET", "/memory")] = Response(200, {"items": [], "private": False})
+    query = EditQuery("mdel:31")
+    run(bot.on_memory_button(SimpleNamespace(callback_query=query), context))
+    assert "Je ne retiens rien" in query.edits[0][0]
+
+
+def test_liste_de_memoire_repli_texte_brut(server, context):
+    server.routes[("DELETE", "/memory/31")] = Response(200, {})
+    server.routes[("GET", "/memory")] = Response(200, {"items": ITEMS[1:], "private": False})
+    query = EditQuery("mdel:31")
+    query.refuse_html = True
+    run(bot.on_memory_button(SimpleNamespace(callback_query=query), context))
+    assert "<b>" not in query.edits[0][0] and "cabinet <Douala>" in query.edits[0][0]
+
+
+def test_tout_effacer_demande_puis_efface(server, context):
+    server.routes[("DELETE", "/memory")] = Response(200, {"status": "deleted", "count": 2})
+    ask = EditQuery("mall")
+    run(bot.on_memory_button(SimpleNamespace(callback_query=ask), context))
+    assert server.calls == [] and "TOUTE la mémoire" in ask.edits[0][0]
+    confirm = EditQuery("mall_ok")
+    run(bot.on_memory_button(SimpleNamespace(callback_query=confirm), context))
+    assert server.calls == [("DELETE", "/memory", 900, {"confirm": "all"})]
+    assert confirm.edits[0][0] == "Mémoire effacée."
+
+
+def test_boutons_memoire_inconnu(server, context):
+    server.routes[("DELETE", "/memory/31")] = Response(403)
+    query = EditQuery("mdel:31", user_id=555)
+    run(bot.on_memory_button(SimpleNamespace(callback_query=query), context))
+    assert query.edits[0][0] == bot.NO_ACCOUNT and context.application.bot_data["unknown"].is_quiet(555)
+
+
+def test_boutons_memoire_serveur_indisponible(server, context):
+    server.routes[("DELETE", "/memory/31")] = bot.httpx.ConnectError("hors ligne")
+    query = EditQuery("mdel:31")
+    run(bot.on_memory_button(SimpleNamespace(callback_query=query), context))
+    assert query.edits[0][0] == bot.UNAVAILABLE
+
+
+def test_journal(server, context):
+    server.routes[("GET", "/journal")] = Response(200, {"entries": [
+        {"at": "2026-10-22T11:25+01:00", "text": "Exécutée : Créer la tâche « Appeler Paul »"}]})
+    upd, msg = update()
+    run(bot.journal_command(upd, context))
+    assert "22/10 11:25 · Exécutée : Créer la tâche « Appeler Paul »" in msg.replies[0][0]
+
+
+# --- Rappels ---------------------------------------------------------------------------
+class Sender:
+    def __init__(self):
+        self.sent = []
+        self.fail_for = set()
+        self.refuse_html = False
+
+    async def send_message(self, chat_id, text, parse_mode=None, reply_markup=None):
+        if chat_id in self.fail_for:
+            raise RuntimeError("utilisateur injoignable")
+        if self.refuse_html and parse_mode is not None:
+            raise bot.BadRequest("Can't parse entities")
+        self.sent.append((chat_id, text, parse_mode, reply_markup))
+
+
+class FakeHttp:
+    def __init__(self, response):
+        self.response = response
+        self.posts = []
+
+    async def post(self, url, json=None):
+        self.posts.append((url, json))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+class HttpResponse(Response):
+    pass
+
+
+def application(response):
+    sender = Sender()
+    return SimpleNamespace(bot=sender, bot_data={"http": FakeHttp(response)}), sender
+
+
+REMINDERS = [
+    {"telegram_id": 111, "id": 7, "title": "Appeler Paul", "due_at": "2026-10-22T11:25+01:00"},
+    {"telegram_id": 222, "id": 8, "title": "Payer <la> facture", "due_at": "2026-10-22T11:30+01:00"},
+]
+
+
+def test_envoi_des_rappels_dus():
+    app, sender = application(Response(200, {"reminders": REMINDERS}))
+    assert run(bot.send_reminders(app)) == 2
+    assert app.bot_data["http"].posts == [("http://orchestrator:5000/reminders/claim", {})]
+    (chat1, text1, mode1, markup1), (chat2, text2, _, _) = sender.sent
+    assert (chat1, text1, mode1) == (111, "<b>Rappel</b>\nAppeler Paul (prévu à 11:25)", bot.ParseMode.HTML)
+    assert buttons(markup1) == [[("Terminer", "tdone:7")]]
+    assert chat2 == 222 and "Payer &lt;la&gt; facture" in text2
+
+
+def test_aucun_rappel_a_envoyer():
+    app, sender = application(Response(200, {"reminders": []}))
+    assert run(bot.send_reminders(app)) == 0 and sender.sent == []
+
+
+def test_un_rappel_qui_echoue_ne_bloque_pas_les_suivants():
+    app, sender = application(Response(200, {"reminders": REMINDERS}))
+    sender.fail_for = {111}
+    assert run(bot.send_reminders(app)) == 1
+    assert [s[0] for s in sender.sent] == [222]
+
+
+def test_rappel_repli_texte_brut():
+    app, sender = application(Response(200, {"reminders": REMINDERS[:1]}))
+    sender.refuse_html = True
+    assert run(bot.send_reminders(app)) == 1
+    assert sender.sent[0][1] == "**Rappel**\nAppeler Paul (prévu à 11:25)" and sender.sent[0][2] is None
+    assert buttons(sender.sent[0][3]) == [[("Terminer", "tdone:7")]]
+
+
+@pytest.mark.parametrize("response", [bot.httpx.ConnectError("hors ligne"), Response(500), Response(200, {})])
+def test_orchestrateur_indisponible_pour_les_rappels(response):
+    app, sender = application(response)
+    assert run(bot.send_reminders(app)) == 0 and sender.sent == []
+
+
+def test_la_boucle_des_rappels_survit_aux_erreurs(monkeypatch):
+    calls = []
+
+    async def boom(application):
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError("panne")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(bot, "send_reminders", boom)
+    monkeypatch.setattr(bot, "REMINDER_POLL_SECONDS", 0)
+    with pytest.raises(asyncio.CancelledError):
+        run(bot.reminder_loop(SimpleNamespace()))
+    assert len(calls) == 3
+
+
+def test_le_demarrage_lance_la_boucle_et_l_arret_la_coupe(monkeypatch):
+    async def scenario():
+        async def idle(application):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(bot, "reminder_loop", idle)
+
+        class FakeBot:
+            async def set_my_commands(self, commands):
+                pass
+
+        app = SimpleNamespace(bot=FakeBot(), bot_data={})
+        await bot.on_start(app)
+        task = app.bot_data["reminders"]
+        assert not task.done()
+        await bot.on_stop(app)
+        await asyncio.sleep(0)
+        return task.cancelled()
+
+    assert asyncio.run(scenario())

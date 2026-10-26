@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -23,6 +24,10 @@ from botlogic import (
     UnknownUsers,
     action_message,
     history_buttons,
+    journal_message,
+    memory_buttons,
+    memory_message,
+    reminder_message,
     start_code,
     task_buttons,
     tasks_message,
@@ -38,6 +43,7 @@ ORCHESTRATOR_URL = os.environ["ORCHESTRATOR_URL"]
 # Jeton partagé avec l'orchestrateur : prouve que la requête vient bien de ce bot.
 # Qui a le droit de parler à FOX est décidé par l'orchestrateur (comptes actifs), pas par le bot.
 SERVICE_TOKEN = os.environ["FOX_SERVICE_TOKEN"]
+REMINDER_POLL_SECONDS = max(5, int(os.environ.get("REMINDER_POLL_SECONDS", "30")))
 UNAVAILABLE = "Service momentanément indisponible."
 NO_ACCOUNT = (
     "Tu n'as pas encore de compte FOX actif. "
@@ -51,6 +57,9 @@ HELP = (
     "/prive : mode « ne pas enregistrer » (rien n'est conservé)\n"
     "/taches : voir tes tâches en cours\n"
     "/tache titre | échéance | priorité : ajouter une tâche (échéance et priorité facultatives)\n"
+    "/memoire : voir et supprimer ce que FOX retient sur toi\n"
+    "/retiens phrase : demander à FOX de retenir une information\n"
+    "/journal : voir ce que FOX a proposé et fait\n"
     "/annuler : annuler la dernière action effectuée"
 )
 COMMANDS = [
@@ -60,6 +69,9 @@ COMMANDS = [
     BotCommand("prive", "Mode ne pas enregistrer"),
     BotCommand("taches", "Voir mes tâches"),
     BotCommand("tache", "Ajouter une tâche"),
+    BotCommand("memoire", "Ce que FOX retient"),
+    BotCommand("retiens", "Faire retenir une information"),
+    BotCommand("journal", "Journal des actions"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
 ]
@@ -346,7 +358,7 @@ async def add_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await message.reply_text(UNAVAILABLE)
     else:
         task = response.json()["task"]
-        await message.reply_text(f"Tâche n°{task['id']} ajoutée. /taches pour les voir.")
+        await message.reply_text("Tâche ajoutée. /taches pour les voir.")
 
 
 async def on_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -375,6 +387,150 @@ async def on_task_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         verb = "terminée" if status == "terminee" else "annulée"
         await query.message.reply_text(f"Tâche #{int(value)} {verb}. /taches pour la liste à jour.")
+
+
+async def show_list(target, text, rows, edit=False):
+    """Affiche un texte Markdown avec boutons, en HTML puis en texte brut si Telegram refuse."""
+    rendered, plain = telegram_messages(text)[0]
+    markup = keyboard(rows) if rows else None
+    send = target.edit_message_text if edit else target.reply_text
+    try:
+        if rendered is None:
+            raise BadRequest("html indisponible")
+        await send(rendered, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except BadRequest:
+        await send(plain, reply_markup=markup)
+
+
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args and context.args[0].lower() in ("effacer", "tout"):
+        response = await simple_call(update, context, "GET", "/memory")
+        if response is not None and response.json()["items"]:
+            await update.effective_message.reply_text(
+                "Effacer TOUTE la mémoire ? FOX oubliera tout ce qu'il retient sur toi.",
+                reply_markup=keyboard([[("Oui, tout effacer", "mall_ok"), ("Annuler", "keep")]]),
+            )
+        elif response is not None:
+            await update.effective_message.reply_text(memory_message([]))
+        return
+    response = await simple_call(update, context, "GET", "/memory")
+    if response is None:
+        return
+    items = response.json()["items"]
+    await show_list(update.effective_message, memory_message(items), memory_buttons(items))
+
+
+async def remember_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    text = " ".join(context.args or []).strip()
+    if not text:
+        await message.reply_text("Écris l'information après la commande, par exemple :\n/retiens Je préfère les réunions le matin")
+        return
+    user_id = update.effective_user.id
+    if unknown(context).is_quiet(user_id):
+        await message.reply_text(NO_ACCOUNT)
+        return
+    try:
+        response = await call(context, "POST", "/memory", user_id, {"text": text})
+    except httpx.HTTPError:
+        log.exception("echec de la requete vers l'orchestrateur")
+        await message.reply_text(UNAVAILABLE)
+        return
+    if response.status_code == 403:
+        await refuse_unknown(update, context)
+    elif response.status_code in (400, 409):
+        await message.reply_text(response.json().get("error", "Information refusée."))
+    elif response.status_code >= 400:
+        log.error("Réponse inattendue de l'orchestrateur (%s) pour /memory", response.status_code)
+        await message.reply_text(UNAVAILABLE)
+    else:
+        await message.reply_text("C'est noté. /memoire pour voir ce que je retiens.")
+
+
+async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    response = await simple_call(update, context, "GET", "/journal")
+    if response is None:
+        return
+    await send_markdown(update.effective_message, journal_message(response.json()["entries"]))
+
+
+async def on_memory_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Boutons de la mémoire : oublier un élément, tout effacer."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    action, _, value = (query.data or "").partition(":")
+    if unknown(context).is_quiet(user_id):
+        await query.edit_message_text(NO_ACCOUNT)
+        return
+    if action == "mall":
+        await query.edit_message_text(
+            "Effacer TOUTE la mémoire ? FOX oubliera tout ce qu'il retient sur toi.",
+            reply_markup=keyboard([[("Oui, tout effacer", "mall_ok"), ("Annuler", "keep")]]),
+        )
+        return
+    if action == "mdel":
+        method, path, payload = "DELETE", f"/memory/{int(value)}", None
+    else:  # mall_ok
+        method, path, payload = "DELETE", "/memory", {"confirm": "all"}
+    try:
+        response = await call(context, method, path, user_id, payload)
+        if response.status_code == 403:
+            unknown(context).mark(user_id)
+            await query.edit_message_text(NO_ACCOUNT)
+            return
+        if response.status_code >= 400 and response.status_code != 404:
+            await query.edit_message_text(UNAVAILABLE)
+            return
+        if action == "mall_ok":
+            await query.edit_message_text("Mémoire effacée.")
+            return
+        listing = await call(context, "GET", "/memory", user_id)  # liste mise à jour, sur place
+        items = listing.json()["items"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        log.exception("echec de la gestion de la mémoire")
+        await query.edit_message_text(UNAVAILABLE)
+        return
+    await show_list(query, memory_message(items), memory_buttons(items), edit=True)
+
+
+async def send_reminders(application: Application) -> int:
+    """Envoie les rappels dus. Retourne le nombre de rappels envoyés."""
+    http: httpx.AsyncClient = application.bot_data["http"]
+    try:
+        response = await http.post(f"{ORCHESTRATOR_URL}/reminders/claim", json={})
+        response.raise_for_status()
+        reminders = response.json()["reminders"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        log.warning("Impossible de relever les rappels", exc_info=True)
+        return 0
+    sent = 0
+    for reminder in reminders:
+        text, rows = reminder_message(reminder)
+        rendered, plain = telegram_messages(text)[0]
+        markup = keyboard(rows)
+        try:
+            try:
+                if rendered is None:
+                    raise BadRequest("html indisponible")
+                await application.bot.send_message(
+                    chat_id=reminder["telegram_id"], text=rendered, parse_mode=ParseMode.HTML, reply_markup=markup
+                )
+            except BadRequest:
+                await application.bot.send_message(chat_id=reminder["telegram_id"], text=plain, reply_markup=markup)
+            sent += 1
+        except Exception:  # un rappel qui échoue ne doit pas bloquer les suivants
+            log.exception("Rappel n°%s non envoyé", reminder.get("id"))
+    return sent
+
+
+async def reminder_loop(application: Application) -> None:
+    while True:
+        await asyncio.sleep(REMINDER_POLL_SECONDS)
+        try:
+            await send_reminders(application)
+        except Exception:  # la boucle ne doit jamais s'arrêter
+            log.exception("Erreur inattendue dans la boucle des rappels")
 
 
 async def on_manage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -454,6 +610,7 @@ async def on_start(application: Application) -> None:
         timeout=90, headers={"X-Fox-Service-Token": SERVICE_TOKEN}
     )
     application.bot_data["unknown"] = UnknownUsers()
+    application.bot_data["reminders"] = asyncio.create_task(reminder_loop(application))
     try:
         await application.bot.set_my_commands(COMMANDS)
     except Exception:  # le menu est un confort : on ne bloque pas le démarrage
@@ -461,6 +618,9 @@ async def on_start(application: Application) -> None:
 
 
 async def on_stop(application: Application) -> None:
+    task = application.bot_data.get("reminders")
+    if task:
+        task.cancel()
     await application.bot_data["http"].aclose()
 
 
@@ -487,12 +647,16 @@ def main() -> None:
         ("prive", private_command),
         ("taches", tasks_command),
         ("tache", add_task_command),
+        ("memoire", memory_command),
+        ("retiens", remember_command),
+        ("journal", journal_command),
         ("annuler", undo_command),
     ):
         application.add_handler(CommandHandler(name, handler, filters=private))
     application.add_handler(
         CallbackQueryHandler(on_decision, pattern=r"^(ok|no):[0-9a-fA-F-]{36}$")
     )
+    application.add_handler(CallbackQueryHandler(on_memory_button, pattern=r"^(mdel:[0-9]{1,18}|mall|mall_ok)$"))
     application.add_handler(CallbackQueryHandler(on_task_button, pattern=r"^(tdone|tcancel):[0-9]{1,18}$"))
     application.add_handler(
         CallbackQueryHandler(on_manage, pattern=r"^(open:[0-9]{1,18}|del:[0-9]{1,18}|delall|delall_ok|keep)$")

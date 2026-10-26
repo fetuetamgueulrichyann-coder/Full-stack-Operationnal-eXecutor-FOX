@@ -118,6 +118,7 @@ TITLE_MAX_CHARS = 40
 RETENTION_DAYS_OWNER = int(os.environ.get("RETENTION_DAYS_OWNER", "90"))
 RETENTION_DAYS_TESTER = int(os.environ.get("RETENTION_DAYS_TESTER", "30"))
 MAX_OPEN_TASKS = int(os.environ.get("MAX_OPEN_TASKS", "50"))
+MAX_MEMORIES = int(os.environ.get("MAX_MEMORIES", "30"))
 TASK_RETENTION_DAYS = int(os.environ.get("TASK_RETENTION_DAYS", "90"))  # tâches closées ; 0 = jamais
 
 
@@ -382,6 +383,11 @@ def _open_count(cur, user_id):
     return cur.fetchone()[0]
 
 
+def has_time(due_at):
+    """Vrai si l'échéance a une heure précise. Une échéance « jour seul » vaut 23:59:59 (fuseau de FOX)."""
+    return due_at is not None and (due_at.hour, due_at.minute, due_at.second) != (23, 59, 59)
+
+
 def create_task(user_id, title, priority="normale", due_at=None, max_open=None):
     max_open = MAX_OPEN_TASKS if max_open is None else max_open
     with cursor() as cur:
@@ -389,9 +395,9 @@ def create_task(user_id, title, priority="normale", due_at=None, max_open=None):
         if max_open and _open_count(cur, user_id) >= max_open:
             raise TaskLimit(max_open)
         cur.execute(
-            f"INSERT INTO tasks (user_id, title, priority, due_at) VALUES (%s, %s, %s, %s) "
+            f"INSERT INTO tasks (user_id, title, priority, due_at, due_time) VALUES (%s, %s, %s, %s, %s) "
             f"RETURNING {_TASK_COLUMNS}",  # noqa: S608 (colonnes fixes)
-            (user_id, title, priority, due_at),
+            (user_id, title, priority, due_at, has_time(due_at)),
         )
         return _task(cur.fetchone())
 
@@ -446,16 +452,48 @@ def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, stat
         if due_at is not _UNSET:
             sets.append("due_at = %s")
             values.append(due_at)
+            sets.append("due_time = %s")
+            values.append(has_time(due_at))
+            sets.append("reminded_at = NULL")  # nouvelle échéance : nouveau rappel
         if status is not None:
             sets.append("status = %s")
             values.append(status)
             sets.append("done_at = now()" if status == "terminee" else "done_at = NULL")
+            if status in OPEN_STATUSES and current[0] in CLOSED_STATUSES:
+                sets.append("reminded_at = NULL")  # tâche rouverte : rappel de nouveau possible
         cur.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = %s AND user_id = %s "  # noqa: S608 (fragments fixes)
             f"RETURNING {_TASK_COLUMNS}",
             (*values, task_id, user_id),
         )
         return _task(cur.fetchone())
+
+
+REMINDER_MAX_AGE_HOURS = 24  # un rappel manqué depuis plus longtemps (bot arrêté) n'est plus envoyé
+
+
+def claim_due_reminders(limit=20):
+    """Rappels à envoyer maintenant : tâches ouvertes dont l'heure est passée, pas encore rappelées.
+
+    Chaque tâche n'est retournée qu'une fois (marquée dans la même opération), même si
+    plusieurs processus interrogent en même temps.
+    """
+    with cursor() as cur:
+        cur.execute(
+            """
+            UPDATE tasks t SET reminded_at = now()
+            FROM users u
+            WHERE t.id IN (
+                    SELECT id FROM tasks
+                    WHERE due_time AND reminded_at IS NULL AND status IN ('a_faire', 'en_cours')
+                      AND due_at <= now() AND due_at > now() - make_interval(hours => %s)
+                    ORDER BY due_at LIMIT %s FOR UPDATE SKIP LOCKED)
+              AND u.id = t.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
+            RETURNING t.id, t.title, t.due_at, u.telegram_id
+            """,
+            (REMINDER_MAX_AGE_HOURS, limit),
+        )
+        return [{"id": r[0], "title": r[1], "due_at": r[2], "telegram_id": r[3]} for r in cur.fetchall()]
 
 
 def delete_task(user_id, task_id):
@@ -476,6 +514,108 @@ def purge_closed_tasks(days=None):
             (days,),
         )
         return cur.rowcount
+
+
+# --- Mémoire -----------------------------------------------------------------
+class MemoryLimit(Exception):
+    """Trop d'éléments mémorisés pour cet utilisateur."""
+
+
+def _memory(row):
+    return {"id": row[0], "content": row[1], "source": row[2], "created_at": row[3]}
+
+
+def create_memory(user_id, content, source="user", max_items=None):
+    """Mémorise un élément. Un élément identique (sans tenir compte de la casse) n'est pas dupliqué."""
+    max_items = MAX_MEMORIES if max_items is None else max_items
+    with cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"memories:{user_id}",))
+        cur.execute(
+            "SELECT id, content, source, created_at FROM memories "
+            "WHERE user_id = %s AND lower(content) = lower(%s)",
+            (user_id, content),
+        )
+        existing = cur.fetchone()
+        if existing:
+            return _memory(existing)
+        cur.execute("SELECT count(*) FROM memories WHERE user_id = %s", (user_id,))
+        if max_items and cur.fetchone()[0] >= max_items:
+            raise MemoryLimit(max_items)
+        cur.execute(
+            "INSERT INTO memories (user_id, content, source) VALUES (%s, %s, %s) "
+            "RETURNING id, content, source, created_at",
+            (user_id, content, source),
+        )
+        return _memory(cur.fetchone())
+
+
+def list_memories(user_id):
+    """Du plus récent au plus ancien."""
+    with cursor() as cur:
+        cur.execute(
+            "SELECT id, content, source, created_at FROM memories WHERE user_id = %s "
+            "ORDER BY created_at DESC, id DESC",
+            (user_id,),
+        )
+        return [_memory(r) for r in cur.fetchall()]
+
+
+def get_memory(user_id, memory_id):
+    with cursor() as cur:
+        cur.execute(
+            "SELECT id, content, source, created_at FROM memories WHERE id = %s AND user_id = %s",
+            (memory_id, user_id),
+        )
+        row = cur.fetchone()
+    return _memory(row) if row else None
+
+
+def delete_memory(user_id, memory_id):
+    with cursor() as cur:
+        cur.execute("DELETE FROM memories WHERE id = %s AND user_id = %s", (memory_id, user_id))
+        return cur.rowcount > 0
+
+
+def delete_all_memories(user_id):
+    with cursor() as cur:
+        cur.execute("DELETE FROM memories WHERE user_id = %s", (user_id,))
+        return cur.rowcount
+
+
+# --- Journal des actions -------------------------------------------------------
+JOURNAL_AUDIT_EVENTS = (
+    "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",
+    "memory_cleared", "chat_deleted", "history_deleted",
+)
+
+
+def journal_entries(user_id, limit=15):
+    """Actions proposées à confirmer + actions directes de l'utilisateur, la plus récente d'abord.
+
+    Chaque entrée : {"at", "kind", "status", "tool", "summary"}. Le journal d'audit ne contient jamais
+    le texte des conversations ni des éléments de mémoire ; les résumés viennent des actions proposées.
+    """
+    with cursor() as cur:
+        cur.execute(
+            "SELECT created_at, tool, summary, status, undone_at FROM pending_actions "
+            "WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT %s",
+            (user_id, limit),
+        )
+        entries = [
+            {"at": r[0], "kind": "action", "status": "undone" if r[4] else r[3], "tool": r[1], "summary": r[2]}
+            for r in cur.fetchall()
+        ]
+        cur.execute(
+            "SELECT created_at, event FROM audit_log WHERE user_id = %s AND event = ANY(%s) "
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            (user_id, list(JOURNAL_AUDIT_EVENTS), limit),
+        )
+        entries += [
+            {"at": r[0], "kind": "event", "status": r[1], "tool": None, "summary": None}
+            for r in cur.fetchall()
+        ]
+    entries.sort(key=lambda e: e["at"], reverse=True)
+    return entries[:limit]
 
 
 # --- Journal d'audit ---------------------------------------------------------

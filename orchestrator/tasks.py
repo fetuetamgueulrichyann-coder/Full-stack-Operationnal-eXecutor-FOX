@@ -47,10 +47,24 @@ def end_of_day(day):
     return datetime(day.year, day.month, day.day, 23, 59, 59, tzinfo=TZ)
 
 
+TIME_SUFFIX = re.compile(r"^(?:(.*?)\s+)?(?:à\s+)?(\d{1,2})\s*[h:]\s*(\d{2})$")
+
+
 def parse_due(value, now_date=None):
-    """Échéance saisie par une personne : JJ/MM, JJ/MM/AAAA, AAAA-MM-JJ, « demain », « aujourd'hui »."""
+    """Échéance saisie par une personne, avec heure facultative.
+
+    Jour : JJ/MM, JJ/MM/AAAA, AAAA-MM-JJ, « demain », « aujourd'hui ». Heure : « 11:25 » ou « 11h25 »,
+    seule (aujourd'hui) ou après le jour (« demain 11:25 », « 25/10 à 9h30 »).
+    """
     now_date = now_date or today()
     text = str(value).strip().lower()
+    timed = TIME_SUFFIX.match(text)
+    if timed and not re.fullmatch(r"\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}.*", text):
+        day_text, hour, minute = timed[1], int(timed[2]), int(timed[3])
+        if hour > 23 or minute > 59:
+            raise TaskInputError(f"Heure non reconnue : « {value} ».")
+        day = parse_due(day_text, now_date) if day_text else end_of_day(now_date)
+        return day.replace(hour=hour, minute=minute, second=0)
     if text in ("aujourd'hui", "aujourdhui"):
         return end_of_day(now_date)
     if text == "demain":
@@ -203,7 +217,7 @@ def register_task_tools():
             "priorite": {"type": "STRING", "description": "haute, normale (par défaut) ou basse"},
         }, "required": ["titre"]},
         classification=WRITE, run=creer_tache, describe=describe_creer,
-        done=lambda result: f"Tâche créée (n°{result['id']}).", needs_user=True,
+        done=lambda result: "Tâche créée.", needs_user=True,
     ))
     register(Tool(
         name="modifier_tache",

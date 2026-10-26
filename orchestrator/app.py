@@ -11,6 +11,8 @@ import accounts
 import agent
 import db
 import formatting
+import journal
+import memory
 import tasks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -464,3 +466,77 @@ def tasks_delete(task_id):
         return jsonify(error="tâche introuvable"), 404
     db.audit(user["id"], "task_deleted", None, {"task_id": task_id})
     return jsonify(status="deleted")
+
+
+@app.post("/reminders/claim")
+def reminders_claim():
+    """Rappels dus, pour le bot Telegram uniquement (jeton de service). Chaque rappel n'est rendu qu'une fois."""
+    if not service_token_valid(request.headers.get("X-Fox-Service-Token")):
+        return jsonify(error="non authentifie"), 401
+    due = db.claim_due_reminders()
+    return jsonify(reminders=[
+        {"telegram_id": r["telegram_id"], "id": r["id"], "title": r["title"],
+         "due_at": tasks.public({**r, "priority": "normale", "status": "a_faire", "overdue": True,
+                                 "created_at": None, "done_at": None})["due_at"]}
+        for r in due
+    ])
+
+
+# --- Mémoire ---------------------------------------------------------------------
+@app.get("/memory")
+def memory_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(items=[memory.public(i) for i in db.list_memories(user["id"])], private=db.private_active(user["id"]))
+
+
+@app.post("/memory")
+def memory_add():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        item = memory.remember(user["id"], body().get("text"))
+    except memory.MemoryInputError as exc:
+        return jsonify(error=str(exc)), 400
+    except db.MemoryLimit as exc:
+        return jsonify(error=f"limite de {exc.args[0]} éléments atteinte : oublie-en un avec /memoire"), 409
+    db.audit(user["id"], "memory_added", None, {"memory_id": item["id"], "mode": "direct"})
+    return jsonify(item=memory.public(item)), 201
+
+
+@app.delete("/memory/<int:memory_id>")
+def memory_delete(memory_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.delete_memory(user["id"], memory_id):
+        return jsonify(error="élément introuvable"), 404
+    db.audit(user["id"], "memory_deleted", None, {"memory_id": memory_id, "mode": "direct"})
+    return jsonify(status="deleted")
+
+
+@app.delete("/memory")
+def memory_clear():
+    user, error = chat_auth()
+    if error:
+        return error
+    if body().get("confirm") != "all":
+        return jsonify(error='confirmation requise : {"confirm": "all"}'), 400
+    count = db.delete_all_memories(user["id"])
+    db.audit(user["id"], "memory_cleared", None, {"count": count})
+    return jsonify(status="deleted", count=count)
+
+
+# --- Journal des actions ---------------------------------------------------------
+@app.get("/journal")
+def journal_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        limit = min(max(int(request.args.get("limit", 15)), 1), 50)
+    except ValueError:
+        return jsonify(error="limit invalide"), 400
+    return jsonify(entries=journal.entries(user["id"], limit))

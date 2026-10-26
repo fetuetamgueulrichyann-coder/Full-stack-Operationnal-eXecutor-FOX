@@ -201,6 +201,31 @@ def test_echeance_avec_heure(tasks):
     assert (due.hour, due.minute) == (9, 30) and due.tzinfo is not None
 
 
+@pytest.mark.parametrize(
+    "text, expected, hm",
+    [
+        ("demain 11:25", date(2026, 10, 22), (11, 25)), ("demain à 9h30", date(2026, 10, 22), (9, 30)),
+        ("11h25", NOW, (11, 25)), ("aujourd'hui 8:05", NOW, (8, 5)), ("25/10 14h00", date(2026, 10, 25), (14, 0)),
+        ("25/10/2027 à 7:15", date(2027, 10, 25), (7, 15)), ("2026-11-02 18:00", date(2026, 11, 2), (18, 0)),
+        ("0:00", NOW, (0, 0)), ("23:59", NOW, (23, 59)),
+    ],
+)
+def test_echeances_avec_heure(tasks, text, expected, hm):
+    due = tasks.parse_due(text, NOW)
+    assert due.date() == expected and (due.hour, due.minute, due.second) == (*hm, 0) and due.tzinfo is not None
+
+
+@pytest.mark.parametrize("text", ["24:00", "11:75", "demain 99h10", "bientôt 11:25", "11h"])
+def test_heures_invalides(tasks, text):
+    with pytest.raises(tasks.TaskInputError):
+        tasks.parse_due(text, NOW)
+
+
+def test_saisie_rapide_avec_heure_programme_un_rappel(db, tasks, alice):
+    title, priority, due = tasks.parse_quick("Appeler Paul | 11h25 | haute", NOW)
+    assert (title, priority) == ("Appeler Paul", "haute") and db.has_time(due)
+
+
 @pytest.mark.parametrize("text", ["bientôt", "32/01", "31/02", "2026-13-01", "", "25-10", "25/10/26"])
 def test_echeances_invalides(tasks, text):
     with pytest.raises(tasks.TaskInputError):

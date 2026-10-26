@@ -236,11 +236,11 @@ def due_label(iso):
 
 
 def tasks_message(tasks):
-    """Liste des tâches ouvertes, en Markdown (rendu ensuite par telegram_messages)."""
+    """Liste des tâches ouvertes, numérotées 1, 2, 3… (Markdown, rendu ensuite par telegram_messages)."""
     if not tasks:
         return "Aucune tâche en cours. Ajoute-en une avec /tache titre | échéance | priorité."
     lines = [f"**Tes tâches ({len(tasks)})**"]
-    for task in tasks[:MAX_TASKS_SHOWN]:
+    for position, task in enumerate(tasks[:MAX_TASKS_SHOWN], start=1):
         details = []
         if task.get("due_at"):
             details.append(("en retard · " if task.get("overdue") else "pour le ") + due_label(task["due_at"]))
@@ -249,18 +249,55 @@ def tasks_message(tasks):
         if task.get("status") == "en_cours":
             details.append("en cours")
         suffix = f" ({', '.join(details)})" if details else ""
-        lines.append(f"- **#{task['id']}** {task['title']}{suffix}")
+        lines.append(f"{position}. {task['title']}{suffix}")
     if len(tasks) > MAX_TASKS_SHOWN:
         lines.append(f"… et {len(tasks) - MAX_TASKS_SHOWN} autre(s).")
     return "\n".join(lines)
 
 
 def task_buttons(tasks):
-    """Une ligne par tâche affichée : [Terminer #id, Annuler #id] -> callbacks tdone:/tcancel:."""
+    """Une ligne par tâche affichée : [Terminer n, Annuler n] (n = position dans la liste)."""
     return [
-        [(f"Terminer #{t['id']}", f"tdone:{t['id']}"), (f"Annuler #{t['id']}", f"tcancel:{t['id']}")]
-        for t in tasks[:MAX_TASKS_SHOWN]
+        [(f"Terminer {n}", f"tdone:{t['id']}"), (f"Annuler {n}", f"tcancel:{t['id']}")]
+        for n, t in enumerate(tasks[:MAX_TASKS_SHOWN], start=1)
     ]
+
+
+def reminder_message(reminder):
+    """Texte (Markdown) et boutons du rappel d'une tâche arrivée à l'heure."""
+    when = str(reminder.get("due_at") or "")[11:16]
+    suffix = f" (prévu à {when})" if when else ""
+    return f"**Rappel**\n{reminder['title']}{suffix}", [[("Terminer", f"tdone:{reminder['id']}")]]
+
+
+MAX_MEMORY_SHOWN = 10
+
+
+def memory_message(items):
+    if not items:
+        return "Je ne retiens rien pour l'instant. Pour ajouter une information : /retiens ma phrase."
+    lines = [f"**Ce que je retiens ({len(items)})**"]
+    for position, item in enumerate(items[:MAX_MEMORY_SHOWN], start=1):
+        lines.append(f"{position}. {item['content']}")
+    if len(items) > MAX_MEMORY_SHOWN:
+        lines.append(f"… et {len(items) - MAX_MEMORY_SHOWN} autre(s) plus anciennes.")
+    return "\n".join(lines)
+
+
+def memory_buttons(items):
+    rows = [[(f"Oublier {n}", f"mdel:{i['id']}")] for n, i in enumerate(items[:MAX_MEMORY_SHOWN], start=1)]
+    if items:
+        rows.append([("Tout effacer", "mall")])
+    return rows
+
+
+def journal_message(entries):
+    if not entries:
+        return "Le journal est vide pour l'instant."
+    lines = [f"**Journal des actions ({len(entries)} dernières)**"]
+    for entry in entries:
+        lines.append(f"- {short_date(entry['at'])} {str(entry['at'])[11:16]} · {entry['text']}")
+    return "\n".join(lines)
 
 
 def start_code(args):

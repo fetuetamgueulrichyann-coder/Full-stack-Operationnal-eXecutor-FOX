@@ -88,30 +88,83 @@ def test_liste_de_taches_avec_details():
     ])
     assert text == (
         "**Tes tâches (4)**\n"
-        "- **#3** Payer la facture (en retard · 20/10, priorité haute)\n"
-        "- **#5** Appeler Paul (pour le 25/10 09:30)\n"
-        "- **#8** Ranger (priorité basse, en cours)\n"
-        "- **#9** Simple"
+        "1. Payer la facture (en retard · 20/10, priorité haute)\n"
+        "2. Appeler Paul (pour le 25/10 09:30)\n"
+        "3. Ranger (priorité basse, en cours)\n"
+        "4. Simple"
     )
 
 
 def test_liste_tronquee_a_dix_taches():
     tasks = [task(i, f"t{i}") for i in range(1, 14)]
     text = botlogic.tasks_message(tasks)
-    assert text.count("- **#") == 10 and "… et 3 autre(s)." in text and text.startswith("**Tes tâches (13)**")
+    assert "10. t10" in text and "11. t11" not in text and "… et 3 autre(s)." in text and text.startswith("**Tes tâches (13)**")
     assert len(botlogic.task_buttons(tasks)) == 10
 
 
 def test_boutons_des_taches():
-    assert botlogic.task_buttons([task(12, "x")]) == [[("Terminer #12", "tdone:12"), ("Annuler #12", "tcancel:12")]]
+    # Le libellé est la position dans la liste ; le bouton garde l'identifiant réel de la tâche.
+    assert botlogic.task_buttons([task(12, "x"), task(40, "y")]) == [
+        [("Terminer 1", "tdone:12"), ("Annuler 1", "tcancel:12")],
+        [("Terminer 2", "tdone:40"), ("Annuler 2", "tcancel:40")],
+    ]
     assert botlogic.task_buttons([]) == []
 
 
 def test_la_liste_se_rend_en_html():
     rendered, _ = botlogic.telegram_messages(botlogic.tasks_message([task(1, "a <b> & c")]))[0]
-    assert "<b>#1</b> a &lt;b&gt; &amp; c" in rendered
+    assert "1. a &lt;b&gt; &amp; c" in rendered
 
 
 @pytest.mark.parametrize("iso, expected", [("2026-10-25T23:59+01:00", "25/10"), ("2026-10-25T09:05+01:00", "25/10 09:05"), (None, "")])
 def test_libelle_d_echeance(iso, expected):
     assert botlogic.due_label(iso) == expected
+
+
+def test_numerotation_repart_de_un_quand_les_anciennes_taches_sont_terminees():
+    assert botlogic.tasks_message([task(57, "Nouvelle")]).splitlines()[1] == "1. Nouvelle"
+
+
+# --- Rappels, mémoire, journal (phase B2) --------------------------------------------
+def test_message_de_rappel():
+    text, rows = botlogic.reminder_message({"id": 7, "title": "Appeler Paul", "due_at": "2026-10-22T11:25+01:00"})
+    assert text == "**Rappel**\nAppeler Paul (prévu à 11:25)"
+    assert rows == [[("Terminer", "tdone:7")]]
+    assert botlogic.reminder_message({"id": 7, "title": "x", "due_at": None})[0] == "**Rappel**\nx"
+
+
+def memo(id_, content):
+    return {"id": id_, "content": content}
+
+
+def test_memoire_vide():
+    assert "/retiens" in botlogic.memory_message([])
+    assert botlogic.memory_buttons([]) == []
+
+
+def test_liste_de_memoire_et_boutons():
+    items = [memo(31, "Je préfère les réunions le matin"), memo(12, "Projet : cabinet Douala")]
+    assert botlogic.memory_message(items) == (
+        "**Ce que je retiens (2)**\n1. Je préfère les réunions le matin\n2. Projet : cabinet Douala"
+    )
+    assert botlogic.memory_buttons(items) == [[("Oublier 1", "mdel:31")], [("Oublier 2", "mdel:12")], [("Tout effacer", "mall")]]
+
+
+def test_memoire_tronquee_a_dix_elements():
+    items = [memo(i, f"m{i}") for i in range(1, 15)]
+    text = botlogic.memory_message(items)
+    assert "10. m10" in text and "11. m11" not in text and "… et 4 autre(s) plus anciennes." in text
+    assert len(botlogic.memory_buttons(items)) == 11  # 10 éléments + « Tout effacer »
+
+
+def test_journal():
+    assert "vide" in botlogic.journal_message([])
+    text = botlogic.journal_message([
+        {"at": "2026-10-22T11:25+01:00", "text": "Exécutée : Créer la tâche « Appeler Paul »"},
+        {"at": "2026-10-21T09:05+01:00", "text": "Tâche ajoutée"},
+    ])
+    assert text == (
+        "**Journal des actions (2 dernières)**\n"
+        "- 22/10 11:25 · Exécutée : Créer la tâche « Appeler Paul »\n"
+        "- 21/10 09:05 · Tâche ajoutée"
+    )

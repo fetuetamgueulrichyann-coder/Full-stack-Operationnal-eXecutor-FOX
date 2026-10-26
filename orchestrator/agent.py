@@ -10,6 +10,7 @@ from google import genai
 from google.genai import errors, types
 
 import db
+import memory
 import tasks  # noqa: F401  (enregistre les outils de tâches)
 from tools import IRREVERSIBLE, REGISTRY, TZ, TZ_NAME, Tool, register
 
@@ -71,6 +72,9 @@ PROMPT_WITH_TOOLS = (
     "Utilise les outils disponibles pour consulter ou modifier l'agenda et les tâches. "
     "Quand l'utilisateur te confie une chose à faire ou à retenir, crée une tâche au lieu de seulement la mentionner. "
     "Pour modifier une tâche, retrouve d'abord son numéro avec lister_taches. "
+    "Quand l'utilisateur te demande de retenir une information durable, utilise retenir ; "
+    "pour l'oublier, utilise oublier_memoire avec le numéro entre crochets. "
+    "Ne mémorise jamais de mot de passe ni d'information sensible. "
     "Pour modifier ou supprimer un événement, retrouve d'abord son identifiant avec lire_agenda, "
     "sans jamais inventer d'identifiant. "
     "Les actions d'écriture sont soumises à la confirmation de l'utilisateur : "
@@ -225,7 +229,7 @@ def groq_reply(user_id, text, chat_id=None, private=False):
     if not db.reserve_provider("groq", GROQ_MAX_CALLS_PER_DAY, GROQ_MAX_TOKENS_PER_DAY):
         log.warning("Plafond journalier Groq atteint")
         raise ProviderQuotaExceeded("plafond Groq atteint")
-    messages = [{"role": "system", "content": system_prompt(with_tools=False)}]
+    messages = [{"role": "system", "content": system_prompt(with_tools=False, user_id=user_id)}]
     for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT, chat_id, private):
         messages.append({"role": "user", "content": user_message})
         messages.append({"role": "assistant", "content": bot_reply})
@@ -259,16 +263,20 @@ def exposed_tools(role):
     return [t for t in REGISTRY.values() if t.expose and t.allowed_for(role)]
 
 
-def system_prompt(with_tools=True, role="owner"):
+def system_prompt(with_tools=True, role="owner", user_id=None):
     now = datetime.now(TZ).isoformat(timespec="minutes")
     has_tools = with_tools and bool(exposed_tools(role))
     tools_part = PROMPT_WITH_TOOLS if has_tools else PROMPT_WITHOUT_TOOLS
-    return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {TZ_NAME})."
+    remembered = memory.prompt_block(user_id) if user_id is not None else ""
+    return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {TZ_NAME}).{remembered}"
 
 
-def build_config(role="owner"):
-    kwargs = {"system_instruction": system_prompt(role=role)}
-    exposed = exposed_tools(role)
+PRIVATE_HIDDEN_TOOLS = ("retenir",)  # en mode privé, rien n'est mémorisé
+
+
+def build_config(role="owner", user_id=None, private=False):
+    kwargs = {"system_instruction": system_prompt(role=role, user_id=user_id)}
+    exposed = [t for t in exposed_tools(role) if not (private and t.name in PRIVATE_HIDDEN_TOOLS)]
     if exposed:
         declarations = [
             types.FunctionDeclaration(
@@ -358,7 +366,7 @@ def chat(user_id, text, role="owner", chat_id=None, private=False):
         return reply, tokens, []
 
     contents = build_contents(user_id, text, chat_id, private)
-    config = build_config(role)
+    config = build_config(role, user_id, private)
     total_tokens = 0
 
     model = GEMINI_MODEL

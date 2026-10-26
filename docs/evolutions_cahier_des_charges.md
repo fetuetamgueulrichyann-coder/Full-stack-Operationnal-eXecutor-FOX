@@ -50,6 +50,7 @@ jour de ces deux documents. Dernière mise à jour : 19/10/2026 (phase A2a livr�
 2. Comptes, sessions, codes d'invitation, rôles propriétaire et testeur (fait, phase A1).
 3. Quotas par utilisateur (fait, phase A1) et par minute (à faire), configurables ; plafond global.
 4. Historique par conversation : consultation, suppression, option « Ne pas enregistrer », purge (fait, phase A2a ; mise en forme des réponses : fait, phase A2b).
+4bis. Tâches persistantes : priorité, échéance, statut, suivi jusqu'à résolution (fait, phase B1). Rappels à l'heure d'une tâche, mémoire contrôlable (/memoire, /retiens) et journal des actions (/journal) : fait, phase B2. Ensuite : briefing du matin et rappels des tâches sans heure (B3), e-mails reliés aux tâches (B4).
 5. Agenda interne par utilisateur : fuseau horaire, conflits, outils de même nom que Google.
 6. E-mails : rédaction, amélioration, résumé, lien Gmail prérempli, bouton « Copier ».
 7. Module commercial : clients, devis (lignes, totaux, TVA, numérotation) calculés en Python.

@@ -159,6 +159,25 @@ plus une fois par heure, à l'usage, ou à la demande avec `admin.py purge`.
 - **Telegram** : le Markdown de FOX est converti en HTML Telegram (gras, italique, code, liens http/https). Tout texte est échappé ; si Telegram refuse le HTML, le message est renvoyé en texte brut. Les longs messages sont coupés aux paragraphes, sans couper un bloc de code.
 - **Actions à confirmer** : titre en gras, une information par ligne (« Quand : », « Lieu : »...).
 
+## Tâches (phase B1)
+
+Une tâche reste enregistrée jusqu'à sa résolution : titre, priorité (haute, normale, basse), échéance facultative, statut (à faire, en cours, terminée, annulée). Les tâches sont privées par utilisateur.
+
+- **Telegram** : `/taches` liste les tâches ouvertes (en retard d'abord) avec des boutons *Terminer* et *Annuler*. `/tache Appeler Paul | 25/10 | haute` ajoute une tâche sans passer par l'IA, donc sans consommer de quota. Échéances reconnues : `25/10`, `25/10/2026`, `2026-10-25`, `demain`, `aujourd'hui`, avec une heure facultative (`demain 11:25`, `11h25`).
+- **Conversation** : le propriétaire peut dire « rappelle-moi de relancer Paul vendredi ». FOX propose de créer la tâche et attend ta confirmation (outils `creer_tache`, `modifier_tache` ; `lister_taches` est une lecture directe).
+- **API** (réutilisée par la future interface web) : `GET /tasks?status=open|all|<statut>`, `POST /tasks` (`{"text": "titre | échéance | priorité"}` ou `{"title", "priority", "due"}`), `PATCH /tasks/<id>`, `DELETE /tasks/<id>`.
+- **Limites** : `MAX_OPEN_TASKS` (50 par utilisateur) ; les tâches terminées ou annulées sont supprimées après `TASK_RETENTION_DAYS` jours (90). Une tâche ouverte n'est jamais purgée.
+- **Rappels** : une tâche avec une heure précise (`/tache Appeler Paul | demain 11:25`, `/tache Appeler Paul | 11h25` pour aujourd'hui, `25/10 à 9h30`) déclenche un message Telegram à l'heure dite, avec un bouton *Terminer*. Une échéance sans heure (jour seul) n'a pas de rappel à heure fixe. Le bot interroge l'orchestrateur toutes les `REMINDER_POLL_SECONDS` secondes (30) ; chaque rappel n'est envoyé qu'une fois, et un rappel manqué depuis plus de 24 h n'est plus envoyé.
+- Migrations : `007_taches.sql`, `008_rappels.sql` (additives).
+
+## Mémoire et journal (phase B2)
+
+- **Mémoire contrôlable** : FOX retient des informations durables (préférences, projets, habitudes) que tu vois et supprimes. `/memoire` les liste avec un bouton *Oublier* par élément, `/memoire effacer` ou *Tout effacer* vide tout (avec confirmation). `/retiens Je préfère les réunions le matin` ajoute un élément directement. Le propriétaire peut aussi dire « retiens que… » : FOX propose, tu confirmes.
+- **Garde-fous** : 200 caractères maximum par élément, 30 éléments par utilisateur (`MAX_MEMORIES`), pas de doublon, aucun mot de passe, clé, code ni numéro de carte (refusés). Le mode privé (`/prive`) ne mémorise rien. Le contenu de la mémoire est envoyé au modèle comme des *données*, jamais comme des consignes ; il reste court (environ 1 200 caractères) pour ménager les quotas. Le journal d'audit ne garde jamais le texte des éléments mémorisés.
+- **Journal** : `/journal` montre les dernières actions en phrases lisibles : proposées, exécutées, annulées, expirées ou en échec, plus les ajouts directs de tâches et de mémoire.
+- **API** : `GET/POST /memory`, `DELETE /memory/<id>`, `DELETE /memory` (`{"confirm": "all"}`), `GET /journal?limit=15`.
+- Migration : `009_memoire.sql` (additive).
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils
