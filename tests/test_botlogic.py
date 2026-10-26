@@ -168,3 +168,24 @@ def test_journal():
         "- 22/10 11:25 · Exécutée : Créer la tâche « Appeler Paul »\n"
         "- 21/10 09:05 · Tâche ajoutée"
     )
+
+
+# --- Briefing du matin (phase B3) ----------------------------------------------------
+@pytest.mark.parametrize("args, expected", [
+    ([], ("status",)),
+    (["maintenant"], ("preview",)), (["Now"], ("preview",)), (["voir"], ("preview",)),
+    (["on"], ("set", {"enabled": True})), (["OUI"], ("set", {"enabled": True})), (["activer"], ("set", {"enabled": True})),
+    (["off"], ("set", {"enabled": False})), (["désactiver"], ("set", {"enabled": False})), (["stop"], ("set", {"enabled": False})),
+    (["07:30"], ("set", {"enabled": True, "time": "07:30"})), (["7h30"], ("set", {"enabled": True, "time": "7h30"})),
+    (["8h"], ("set", {"enabled": True, "time": "8h"})), (["7", "h", "30"], ("set", {"enabled": True, "time": "7 h 30"})),
+    (["demain"], ("invalid",)), (["on", "off"], ("invalid",)), (["25:61:00"], ("invalid",)), (["8"], ("invalid",)),
+])
+def test_commande_briefing(args, expected):
+    assert botlogic.briefing_command(args) == expected
+
+
+def test_etat_du_briefing():
+    on = botlogic.briefing_status({"enabled": True, "time": "07:30"})
+    assert on.startswith("Briefing du matin activé à 07:30.") and "/briefing off" in on and "/briefing maintenant" in on
+    off = botlogic.briefing_status({"enabled": False, "time": "08:00"})
+    assert off.startswith("Briefing du matin désactivé.") and "(08:00 par défaut)" in off and "/briefing on" in off

@@ -3,6 +3,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime
 
 from flask import Flask, jsonify, request
 from google.genai import errors
@@ -10,6 +11,7 @@ from google.genai import errors
 import accounts
 import agent
 import db
+import briefing
 import formatting
 import journal
 import memory
@@ -540,3 +542,55 @@ def journal_list():
     except ValueError:
         return jsonify(error="limit invalide"), 400
     return jsonify(entries=journal.entries(user["id"], limit))
+
+
+# --- Briefing du matin -----------------------------------------------------------
+@app.get("/briefing")
+def briefing_get():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(**db.get_briefing(user["id"]))
+
+
+@app.post("/briefing")
+def briefing_set():
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    enabled = data.get("enabled")
+    if enabled is not None and not isinstance(enabled, bool):
+        return jsonify(error="enabled doit être true ou false"), 400
+    if enabled is None and data.get("time") is None:
+        return jsonify(error="rien à modifier : enabled et/ou time"), 400
+    try:
+        settings = briefing.configure(user["id"], enabled, data.get("time"))
+    except briefing.BriefingInputError as exc:
+        return jsonify(error=str(exc)), 400
+    db.audit(user["id"], "briefing_set", None, {"enabled": settings["enabled"], "time": settings["time"]})
+    return jsonify(**settings)
+
+
+@app.get("/briefing/preview")
+def briefing_preview():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(text=briefing.build(user["id"], user["role"]))
+
+
+@app.post("/briefings/claim")
+def briefings_claim():
+    """Briefings dus, pour le bot Telegram uniquement. Chaque briefing n'est rendu qu'une fois par jour."""
+    if not service_token_valid(request.headers.get("X-Fox-Service-Token")):
+        return jsonify(error="non authentifie"), 401
+    now = datetime.now(tasks.TZ)
+    due = db.claim_due_briefings(now.date(), now.time().replace(microsecond=0))
+    items = []
+    for entry in due:
+        try:
+            items.append({"telegram_id": entry["telegram_id"], "text": briefing.build(entry["user_id"], entry["role"], now)})
+        except Exception:
+            log.exception("echec de la construction du briefing")
+    return jsonify(briefings=items)

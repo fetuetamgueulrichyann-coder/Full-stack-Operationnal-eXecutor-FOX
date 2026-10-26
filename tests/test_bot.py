@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,7 +365,7 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
     for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
@@ -552,8 +552,8 @@ def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
 
 
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache", "memoire", "retiens", "journal"} <= {c.command for c in bot.COMMANDS}
-    for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal"):
+    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing"} <= {c.command for c in bot.COMMANDS}
+    for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal", "/briefing"):
         assert command in bot.HELP
 
 
@@ -825,3 +825,138 @@ def test_le_demarrage_lance_la_boucle_et_l_arret_la_coupe(monkeypatch):
         return task.cancelled()
 
     assert asyncio.run(scenario())
+
+
+# --- Briefing du matin (phase B3) -----------------------------------------------------
+def test_etat_du_briefing_par_la_commande(server, context):
+    server.routes[("GET", "/briefing")] = Response(200, {"enabled": True, "time": "07:30"})
+    upd, msg = update()
+    run(bot.briefing_cmd(upd, context))
+    assert server.calls == [("GET", "/briefing", 900, None)]
+    assert msg.replies[0][0].startswith("Briefing du matin activé à 07:30.")
+
+
+def test_activer_le_briefing(server, context):
+    server.routes[("POST", "/briefing")] = Response(200, {"enabled": True, "time": "08:00"})
+    upd, msg = update()
+    context.args = ["on"]
+    run(bot.briefing_cmd(upd, context))
+    assert server.calls == [("POST", "/briefing", 900, {"enabled": True})]
+    assert "activé à 08:00" in msg.replies[0][0]
+
+
+def test_regler_l_heure_du_briefing(server, context):
+    server.routes[("POST", "/briefing")] = Response(200, {"enabled": True, "time": "07:30"})
+    upd, msg = update()
+    context.args = ["7h30"]
+    run(bot.briefing_cmd(upd, context))
+    assert server.calls == [("POST", "/briefing", 900, {"enabled": True, "time": "7h30"})]
+
+
+def test_desactiver_le_briefing(server, context):
+    server.routes[("POST", "/briefing")] = Response(200, {"enabled": False, "time": "08:00"})
+    upd, msg = update()
+    context.args = ["off"]
+    run(bot.briefing_cmd(upd, context))
+    assert "désactivé" in msg.replies[0][0]
+
+
+def test_apercu_du_briefing(server, context):
+    server.routes[("GET", "/briefing/preview")] = Response(200, {"text": "**Briefing du jeudi 22/10**\n\nRien de prévu aujourd'hui."})
+    upd, msg = update()
+    context.args = ["maintenant"]
+    run(bot.briefing_cmd(upd, context))
+    assert msg.replies[0][0] == "<b>Briefing du jeudi 22/10</b>\n\nRien de prévu aujourd'hui."
+
+
+def test_briefing_commande_invalide(server, context):
+    upd, msg = update()
+    context.args = ["demain"]
+    run(bot.briefing_cmd(upd, context))
+    assert server.calls == [] and "Je n'ai pas compris" in msg.replies[0][0]
+
+
+def test_briefing_heure_refusee_par_le_serveur(server, context):
+    server.routes[("POST", "/briefing")] = Response(400, {"error": "Heure non reconnue."})
+    upd, msg = update()
+    context.args = ["25:00"]
+    run(bot.briefing_cmd(upd, context))
+    assert msg.replies == [("Heure non reconnue.", None)]
+
+
+@pytest.mark.parametrize("status, expected", [(403, bot.NO_ACCOUNT), (500, bot.UNAVAILABLE)])
+def test_briefing_erreurs_du_serveur(server, context, status, expected):
+    server.routes[("POST", "/briefing")] = Response(status)
+    upd, msg = update(user_id=555)
+    context.args = ["on"]
+    run(bot.briefing_cmd(upd, context))
+    assert msg.replies == [(expected, None)]
+
+
+def test_briefing_serveur_indisponible(server, context):
+    server.routes[("POST", "/briefing")] = bot.httpx.ConnectError("hors ligne")
+    upd, msg = update()
+    context.args = ["on"]
+    run(bot.briefing_cmd(upd, context))
+    assert msg.replies == [(bot.UNAVAILABLE, None)]
+
+
+BRIEFINGS = [
+    {"telegram_id": 111, "text": "**Briefing du jeudi 22/10**\n\n**Aujourd'hui (1)**\n- 11:25 Appeler <Paul>"},
+    {"telegram_id": 222, "text": "**Briefing du jeudi 22/10**\n\nRien de prévu aujourd'hui."},
+]
+
+
+def test_envoi_des_briefings():
+    app, sender = application(Response(200, {"briefings": BRIEFINGS}))
+    assert run(bot.send_briefings(app)) == 2
+    assert app.bot_data["http"].posts == [("http://orchestrator:5000/briefings/claim", {})]
+    (chat1, text1, mode1, markup1), (chat2, text2, _, _) = sender.sent
+    assert chat1 == 111 and mode1 == bot.ParseMode.HTML and markup1 is None
+    assert text1 == "<b>Briefing du jeudi 22/10</b>\n\n<b>Aujourd'hui (1)</b>\n• 11:25 Appeler &lt;Paul&gt;"
+    assert chat2 == 222 and text2.endswith("Rien de prévu aujourd'hui.")
+
+
+def test_briefing_tres_long_envoye_en_plusieurs_messages():
+    long_text = "**Briefing**\n\n" + "\n\n".join(f"- ligne {i} " + "mot " * 200 for i in range(15))
+    app, sender = application(Response(200, {"briefings": [{"telegram_id": 111, "text": long_text}]}))
+    assert run(bot.send_briefings(app)) == 1
+    assert len(sender.sent) > 1 and all(len(text) <= 4096 for _, text, _, _ in sender.sent)
+
+
+def test_briefing_repli_texte_brut():
+    app, sender = application(Response(200, {"briefings": BRIEFINGS[:1]}))
+    sender.refuse_html = True
+    assert run(bot.send_briefings(app)) == 1
+    assert sender.sent[0][2] is None and "Appeler <Paul>" in sender.sent[0][1]
+
+
+def test_un_briefing_qui_echoue_ne_bloque_pas_les_suivants():
+    app, sender = application(Response(200, {"briefings": BRIEFINGS}))
+    sender.fail_for = {111}
+    assert run(bot.send_briefings(app)) == 1
+    assert [s[0] for s in sender.sent] == [222]
+
+
+@pytest.mark.parametrize("response", [bot.httpx.ConnectError("hors ligne"), Response(500), Response(200, {})])
+def test_orchestrateur_indisponible_pour_les_briefings(response):
+    app, sender = application(response)
+    assert run(bot.send_briefings(app)) == 0 and sender.sent == []
+
+
+def test_la_boucle_envoie_rappels_et_briefings(monkeypatch):
+    seen = []
+
+    async def reminders(application):
+        seen.append("rappels")
+
+    async def briefings(application):
+        seen.append("briefings")
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(bot, "send_reminders", reminders)
+    monkeypatch.setattr(bot, "send_briefings", briefings)
+    monkeypatch.setattr(bot, "REMINDER_POLL_SECONDS", 0)
+    with pytest.raises(asyncio.CancelledError):
+        run(asyncio.wait_for(bot.reminder_loop(SimpleNamespace()), timeout=3))  # sans envoi des briefings : TimeoutError
+    assert seen == ["rappels", "briefings"]

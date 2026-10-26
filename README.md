@@ -178,6 +178,18 @@ Une tâche reste enregistrée jusqu'à sa résolution : titre, priorité (haute,
 - **API** : `GET/POST /memory`, `DELETE /memory/<id>`, `DELETE /memory` (`{"confirm": "all"}`), `GET /journal?limit=15`.
 - Migration : `009_memoire.sql` (additive).
 
+## Briefing du matin (phase B3)
+
+Chaque utilisateur peut recevoir sur Telegram un résumé de sa journée, à l'heure de son choix. Il est **désactivé par défaut**.
+
+- `/briefing on` l'active (08:00 par défaut), `/briefing 07:30` règle l'heure et l'active, `/briefing off` le désactive, `/briefing maintenant` l'affiche tout de suite sans toucher à l'envoi du jour, `/briefing` montre l'état.
+- **Contenu** : tâches en retard, tâches du jour (celles avec une heure d'abord), agenda du jour (propriétaire, si Google Agenda est configuré ; « Agenda indisponible » s'il est en panne), tâches des 3 prochains jours, nombre de tâches sans échéance. « Rien de prévu aujourd'hui. » si la journée est vide.
+- **Sans IA** : le texte est construit par le code, il ne consomme aucun quota et ne peut rien inventer.
+- **Un seul envoi par jour**, à l'heure choisie (fuseau `TIMEZONE`). Si le bot était arrêté, le briefing part dès son retour, jusqu'à 6 h après l'heure choisie, puis il est sauté. Activer ou régler une heure déjà passée aujourd'hui ne déclenche rien : le premier briefing est celui de demain.
+- **API** : `GET/POST /briefing` (`{"enabled": bool, "time": "07:30"}`), `GET /briefing/preview`. Le bot relève les envois dus avec `POST /briefings/claim` (jeton de service uniquement).
+- Les tâches sans heure sont ainsi rappelées par le briefing ; celles avec une heure gardent leur rappel à l'heure exacte (phase B2).
+- Migration : `010_briefing.sql` (additive).
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

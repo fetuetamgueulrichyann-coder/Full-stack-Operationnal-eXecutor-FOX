@@ -23,6 +23,8 @@ from telegram.ext import (
 from botlogic import (
     UnknownUsers,
     action_message,
+    briefing_command,
+    briefing_status,
     history_buttons,
     journal_message,
     memory_buttons,
@@ -60,6 +62,7 @@ HELP = (
     "/memoire : voir et supprimer ce que FOX retient sur toi\n"
     "/retiens phrase : demander à FOX de retenir une information\n"
     "/journal : voir ce que FOX a proposé et fait\n"
+    "/briefing : briefing du matin (on, off, une heure comme 07:30, ou maintenant)\n"
     "/annuler : annuler la dernière action effectuée"
 )
 COMMANDS = [
@@ -72,6 +75,7 @@ COMMANDS = [
     BotCommand("memoire", "Ce que FOX retient"),
     BotCommand("retiens", "Faire retenir une information"),
     BotCommand("journal", "Journal des actions"),
+    BotCommand("briefing", "Briefing du matin"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
 ]
@@ -454,6 +458,41 @@ async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await send_markdown(update.effective_message, journal_message(response.json()["entries"]))
 
 
+async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    kind, *rest = briefing_command(context.args)
+    if kind == "invalid":
+        await message.reply_text("Je n'ai pas compris. /briefing on, /briefing off, /briefing 07:30 ou /briefing maintenant.")
+        return
+    if kind == "status":
+        response = await simple_call(update, context, "GET", "/briefing")
+        if response is not None:
+            await message.reply_text(briefing_status(response.json()))
+    elif kind == "preview":
+        response = await simple_call(update, context, "GET", "/briefing/preview")
+        if response is not None:
+            await send_markdown(message, response.json()["text"])
+    else:
+        user_id = update.effective_user.id
+        if unknown(context).is_quiet(user_id):
+            await message.reply_text(NO_ACCOUNT)
+            return
+        try:
+            response = await call(context, "POST", "/briefing", user_id, rest[0])
+        except httpx.HTTPError:
+            log.exception("echec de la requete vers l'orchestrateur")
+            await message.reply_text(UNAVAILABLE)
+            return
+        if response.status_code == 403:
+            await refuse_unknown(update, context)
+        elif response.status_code == 400:
+            await message.reply_text(response.json().get("error", "Réglage refusé."))
+        elif response.status_code >= 400:
+            await message.reply_text(UNAVAILABLE)
+        else:
+            await message.reply_text(briefing_status(response.json()))
+
+
 async def on_memory_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Boutons de la mémoire : oublier un élément, tout effacer."""
     query = update.callback_query
@@ -524,11 +563,40 @@ async def send_reminders(application: Application) -> int:
     return sent
 
 
+async def send_briefings(application: Application) -> int:
+    """Envoie les briefings du matin dus. Retourne le nombre de briefings envoyés."""
+    http: httpx.AsyncClient = application.bot_data["http"]
+    try:
+        response = await http.post(f"{ORCHESTRATOR_URL}/briefings/claim", json={})
+        response.raise_for_status()
+        briefings = response.json()["briefings"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        log.warning("Impossible de relever les briefings", exc_info=True)
+        return 0
+    sent = 0
+    for item in briefings:
+        try:
+            for rendered, plain in telegram_messages(item["text"]):
+                try:
+                    if rendered is None:
+                        raise BadRequest("html indisponible")
+                    await application.bot.send_message(
+                        chat_id=item["telegram_id"], text=rendered, parse_mode=ParseMode.HTML
+                    )
+                except BadRequest:
+                    await application.bot.send_message(chat_id=item["telegram_id"], text=plain)
+            sent += 1
+        except Exception:  # un briefing qui échoue ne doit pas bloquer les suivants
+            log.exception("Briefing non envoyé")
+    return sent
+
+
 async def reminder_loop(application: Application) -> None:
     while True:
         await asyncio.sleep(REMINDER_POLL_SECONDS)
         try:
             await send_reminders(application)
+            await send_briefings(application)
         except Exception:  # la boucle ne doit jamais s'arrêter
             log.exception("Erreur inattendue dans la boucle des rappels")
 
@@ -650,6 +718,7 @@ def main() -> None:
         ("memoire", memory_command),
         ("retiens", remember_command),
         ("journal", journal_command),
+        ("briefing", briefing_cmd),
         ("annuler", undo_command),
     ):
         application.add_handler(CommandHandler(name, handler, filters=private))

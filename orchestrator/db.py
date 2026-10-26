@@ -582,6 +582,62 @@ def delete_all_memories(user_id):
         return cur.rowcount
 
 
+# --- Briefing du matin ------------------------------------------------------------
+BRIEFING_WINDOW_HOURS = 6  # un briefing manqué (bot arrêté) est encore envoyé pendant 6 h, puis sauté
+DEFAULT_BRIEFING_TIME = "08:00"
+
+
+def get_briefing(user_id):
+    with cursor() as cur:
+        cur.execute("SELECT enabled, send_time FROM briefing_settings WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+    return {"enabled": row[0], "time": row[1].strftime("%H:%M")} if row else {"enabled": False, "time": DEFAULT_BRIEFING_TIME}
+
+
+def set_briefing(user_id, enabled=None, send_time=None, today=None):
+    """Active/désactive le briefing et/ou change l'heure (« HH:MM »).
+
+    `today` : jour local. Activer ou changer l'heure après l'heure choisie ne déclenche pas
+    un envoi immédiat le même jour : le prochain briefing est celui de demain.
+    """
+    current = get_briefing(user_id)
+    enabled = current["enabled"] if enabled is None else enabled
+    send_time = current["time"] if send_time is None else send_time
+    with cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO briefing_settings (user_id, enabled, send_time, last_sent_on) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET enabled = EXCLUDED.enabled, send_time = EXCLUDED.send_time,
+                last_sent_on = COALESCE(EXCLUDED.last_sent_on, briefing_settings.last_sent_on)
+            """,
+            (user_id, enabled, send_time, today),
+        )
+    return get_briefing(user_id)
+
+
+def claim_due_briefings(local_date, local_time, limit=20):
+    """Utilisateurs dont le briefing est dû (heure atteinte, pas encore envoyé aujourd'hui).
+
+    Chaque briefing n'est retourné qu'une fois par jour : le jour d'envoi est enregistré dans la même opération.
+    """
+    with cursor() as cur:
+        cur.execute(
+            """
+            UPDATE briefing_settings b SET last_sent_on = %s
+            FROM users u
+            WHERE b.user_id IN (
+                    SELECT user_id FROM briefing_settings
+                    WHERE enabled AND last_sent_on IS DISTINCT FROM %s
+                      AND send_time <= %s AND %s - send_time <= make_interval(hours => %s)
+                    ORDER BY send_time LIMIT %s FOR UPDATE SKIP LOCKED)
+              AND u.id = b.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
+            RETURNING u.id, u.telegram_id, u.role
+            """,
+            (local_date, local_date, local_time, local_time, BRIEFING_WINDOW_HOURS, limit),
+        )
+        return [{"user_id": r[0], "telegram_id": r[1], "role": r[2]} for r in cur.fetchall()]
+
+
 # --- Journal des actions -------------------------------------------------------
 JOURNAL_AUDIT_EVENTS = (
     "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",

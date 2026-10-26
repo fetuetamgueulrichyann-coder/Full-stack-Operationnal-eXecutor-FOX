@@ -291,6 +291,36 @@ def memory_buttons(items):
     return rows
 
 
+def briefing_command(args):
+    """Argument de /briefing -> ("status",) | ("preview",) | ("set", payload) | ("invalid",)."""
+    if not args:
+        return ("status",)
+    word = " ".join(args).strip().lower()
+    if word in ("maintenant", "now", "voir"):
+        return ("preview",)
+    if word in ("on", "oui", "activer", "active"):
+        return ("set", {"enabled": True})
+    if word in ("off", "non", "stop", "desactiver", "désactiver", "desactive"):
+        return ("set", {"enabled": False})
+    if re.fullmatch(r"\d{1,2}\s*[h:]\s*(\d{2})?", word):
+        return ("set", {"enabled": True, "time": word})
+    return ("invalid",)
+
+
+def briefing_status(settings):
+    if settings.get("enabled"):
+        return (
+            f"Briefing du matin activé à {settings['time']}.\n"
+            "/briefing off pour le désactiver, /briefing 07:30 pour changer l'heure, "
+            "/briefing maintenant pour le voir tout de suite."
+        )
+    return (
+        "Briefing du matin désactivé.\n"
+        f"/briefing on pour l'activer ({settings.get('time', '08:00')} par défaut), "
+        "/briefing 07:30 pour choisir l'heure, /briefing maintenant pour le voir tout de suite."
+    )
+
+
 def journal_message(entries):
     if not entries:
         return "Le journal est vide pour l'instant."
