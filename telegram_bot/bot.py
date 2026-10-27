@@ -154,7 +154,9 @@ async def call(context, method, path, telegram_id, payload=None):
     """Appelle l'orchestrateur pour le compte de cet identifiant Telegram. Retourne la réponse."""
     http: httpx.AsyncClient = context.application.bot_data["http"]
     if method == "GET":
-        return await http.get(f"{ORCHESTRATOR_URL}{path}", params={"telegram_id": telegram_id})
+        # Paramètres de requête passés à part : ils ne doivent jamais être écrits dans le chemin,
+        # car `params` remplacerait toute chaîne de requête déjà présente dans l'URL.
+        return await http.get(f"{ORCHESTRATOR_URL}{path}", params={**(payload or {}), "telegram_id": telegram_id})
     return await http.request(
         method, f"{ORCHESTRATOR_URL}{path}", json={"telegram_id": telegram_id, **(payload or {})}
     )
@@ -573,9 +575,7 @@ def refusal(response, default):
 
 async def pick_client(update, context, name):
     """Retourne la fiche du client désigné par son nom, ou None après avoir répondu (introuvable, ambigu)."""
-    from urllib.parse import quote as urlquote
-
-    response = await commercial_call(update, context, "GET", f"/clients/find?q={urlquote(name, safe='')}")
+    response = await commercial_call(update, context, "GET", "/clients/find", {"q": name})
     if response is None:
         return None
     if response.status_code >= 400:

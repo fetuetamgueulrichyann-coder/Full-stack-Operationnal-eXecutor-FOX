@@ -1133,36 +1133,66 @@ def test_client_ajout_refuse_affiche_la_raison(server, context):
 
 
 def test_client_fiche(server, context):
-    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": [PAUL]})
     upd, msg = update("/client Paul")
     run(bot.client_cmd(upd, context))
     assert "Paul Martin" in msg.replies[0][0] and "p@x.fr" in msg.replies[0][0]
 
 
 def test_client_introuvable(server, context):
-    server.routes[("GET", "/clients/find?q=Zoe")] = Response(200, {"clients": []})
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": []})
     upd, msg = update("/client Zoe")
     run(bot.client_cmd(upd, context))
     assert "Je ne trouve pas de client « Zoe »" in msg.replies[0][0]
 
 
 def test_client_ambigu(server, context):
-    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL, {**PAUL, "id": 6, "name": "Paul Durand"}]})
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": [PAUL, {**PAUL, "id": 6, "name": "Paul Durand"}]})
     upd, msg = update("/client supprime Paul")
     run(bot.client_cmd(upd, context))
     assert "Plusieurs clients correspondent : Paul Martin, Paul Durand" in msg.replies[0][0]
     assert all(call[0] != "DELETE" for call in server.calls)
 
 
-def test_client_nom_encode_dans_l_url(server, context):
-    server.routes[("GET", "/clients/find?q=Andr%C3%A9%20%26%20Fils")] = Response(200, {"clients": []})
+def test_client_nom_transmis_en_parametre(server, context):
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": []})
     upd, msg = update("/client André & Fils")
     run(bot.client_cmd(upd, context))
-    assert server.calls[0][1] == "/clients/find?q=Andr%C3%A9%20%26%20Fils"
+    assert server.calls[0] == ("GET", "/clients/find", 900, {"q": "André & Fils"})
+
+
+def test_call_get_envoie_les_parametres_et_l_identifiant(monkeypatch):
+    """Régression : « /client Paul » répondait « Nom du client manquant » (la requête était écrasée)."""
+    seen = {}
+
+    class FakeHttp:
+        async def get(self, url, params=None):
+            seen.update(url=url, params=params)
+            return Response(200, {})
+
+    ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"http": FakeHttp()}))
+    run(bot.call(ctx, "GET", "/clients/find", 900, {"q": "Paul"}))
+    assert seen["url"].endswith("/clients/find") and "?" not in seen["url"]
+    assert seen["params"] == {"q": "Paul", "telegram_id": 900}
+    run(bot.call(ctx, "GET", "/tasks", 900))
+    assert seen["params"] == {"telegram_id": 900}
+
+
+def test_call_get_ne_laisse_pas_le_client_ecraser_l_identifiant():
+    seen = {}
+
+    class FakeHttp:
+        async def get(self, url, params=None):
+            seen.update(params=params)
+            return Response(200, {})
+
+    ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"http": FakeHttp()}))
+    run(bot.call(ctx, "GET", "/clients/find", 900, {"q": "x", "telegram_id": 1}))
+    assert seen["params"]["telegram_id"] == 900
 
 
 def test_client_modification(server, context):
-    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": [PAUL]})
     server.routes[("PATCH", "/clients/5")] = Response(200, {"client": {**PAUL, "address": "Douala"}})
     upd, msg = update("/client modifie Paul ; ; ; Douala")
     run(bot.client_cmd(upd, context))
@@ -1171,7 +1201,7 @@ def test_client_modification(server, context):
 
 
 def test_client_modification_refusee(server, context):
-    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": [PAUL]})
     server.routes[("PATCH", "/clients/5")] = Response(400, {"error": "Adresse e-mail non reconnue."})
     upd, msg = update("/client modifie Paul ; ; zz")
     run(bot.client_cmd(upd, context))
@@ -1179,7 +1209,7 @@ def test_client_modification_refusee(server, context):
 
 
 def test_client_suppression(server, context):
-    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("GET", "/clients/find")] = Response(200, {"clients": [PAUL]})
     server.routes[("DELETE", "/clients/5")] = Response(200, {"status": "deleted"})
     upd, msg = update("/client supprime Paul")
     run(bot.client_cmd(upd, context))
