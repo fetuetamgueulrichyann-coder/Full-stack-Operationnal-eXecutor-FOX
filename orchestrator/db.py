@@ -642,6 +642,7 @@ def claim_due_briefings(local_date, local_time, limit=20):
 JOURNAL_AUDIT_EVENTS = (
     "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",
     "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
+    "client_created", "client_updated", "client_deleted", "quote_created", "quote_status", "quote_deleted",
 )
 
 
@@ -798,3 +799,243 @@ def release_undo(target_id):
         cur.execute(
             "UPDATE pending_actions SET undone_at = NULL WHERE id = %s", (target_id,)
         )
+
+
+# --- Clients et devis (phase C) ---------------------------------------------------
+MAX_CLIENTS = int(os.environ.get("MAX_CLIENTS", "200"))
+MAX_QUOTES = int(os.environ.get("MAX_QUOTES", "500"))
+
+
+class ClientLimit(Exception):
+    """Trop de clients pour cet utilisateur."""
+
+
+class QuoteLimit(Exception):
+    """Trop de devis pour cet utilisateur."""
+
+
+class DuplicateClient(Exception):
+    """Un client du même nom existe déjà (sans tenir compte de la casse)."""
+
+
+class QuoteLocked(Exception):
+    """Opération refusée à cause du statut du devis."""
+
+
+_CLIENT_COLUMNS = "id, name, phone, email, address, notes, created_at, updated_at"
+CLIENT_FIELDS = ("name", "phone", "email", "address", "notes")
+
+
+def _client(row):
+    return {
+        "id": row[0], "name": row[1], "phone": row[2], "email": row[3], "address": row[4],
+        "notes": row[5], "created_at": row[6], "updated_at": row[7],
+    }
+
+
+def _lock_clients(cur, user_id):
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"clients:{user_id}",))
+
+
+def create_client(user_id, name, phone=None, email=None, address=None, notes=None, max_clients=None):
+    max_clients = MAX_CLIENTS if max_clients is None else max_clients
+    with cursor() as cur:
+        _lock_clients(cur, user_id)
+        cur.execute("SELECT 1 FROM clients WHERE user_id = %s AND lower(name) = lower(%s)", (user_id, name))
+        if cur.fetchone():
+            raise DuplicateClient(name)
+        cur.execute("SELECT count(*) FROM clients WHERE user_id = %s", (user_id,))
+        if max_clients and cur.fetchone()[0] >= max_clients:
+            raise ClientLimit(max_clients)
+        cur.execute(
+            f"INSERT INTO clients (user_id, name, phone, email, address, notes) VALUES (%s, %s, %s, %s, %s, %s) "
+            f"RETURNING {_CLIENT_COLUMNS}",  # noqa: S608 (colonnes fixes)
+            (user_id, name, phone, email, address, notes),
+        )
+        return _client(cur.fetchone())
+
+
+def _like(text):
+    return "%" + text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def list_clients(user_id, query=None, limit=50):
+    """Clients de cet utilisateur par ordre alphabétique ; `query` filtre sur le nom (sous-chaîne)."""
+    with cursor() as cur:
+        if query:
+            cur.execute(
+                f"SELECT {_CLIENT_COLUMNS} FROM clients WHERE user_id = %s AND name ILIKE %s "  # noqa: S608
+                "ORDER BY lower(name), id LIMIT %s",
+                (user_id, _like(query), limit),
+            )
+        else:
+            cur.execute(
+                f"SELECT {_CLIENT_COLUMNS} FROM clients WHERE user_id = %s ORDER BY lower(name), id LIMIT %s",  # noqa: S608
+                (user_id, limit),
+            )
+        return [_client(r) for r in cur.fetchall()]
+
+
+def get_client(user_id, client_id):
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_CLIENT_COLUMNS} FROM clients WHERE id = %s AND user_id = %s",  # noqa: S608
+            (client_id, user_id),
+        )
+        row = cur.fetchone()
+    return _client(row) if row else None
+
+
+def find_clients(user_id, name):
+    """Correspondance exacte (casse ignorée) si elle existe, sinon tous les noms contenant le texte."""
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_CLIENT_COLUMNS} FROM clients WHERE user_id = %s AND lower(name) = lower(%s)",  # noqa: S608
+            (user_id, name),
+        )
+        row = cur.fetchone()
+    if row:
+        return [_client(row)]
+    return list_clients(user_id, name, limit=10)
+
+
+def update_client(user_id, client_id, **changes):
+    """Modifie des champs d'un client (None efface un champ facultatif). None si introuvable."""
+    fields = [f for f in CLIENT_FIELDS if f in changes]
+    if not fields:
+        return get_client(user_id, client_id)
+    with cursor() as cur:
+        _lock_clients(cur, user_id)
+        if "name" in changes:
+            cur.execute(
+                "SELECT 1 FROM clients WHERE user_id = %s AND lower(name) = lower(%s) AND id <> %s",
+                (user_id, changes["name"], client_id),
+            )
+            if cur.fetchone():
+                raise DuplicateClient(changes["name"])
+        sets = ", ".join(f"{f} = %s" for f in fields)  # noms de colonnes issus de CLIENT_FIELDS uniquement
+        cur.execute(
+            f"UPDATE clients SET {sets}, updated_at = now() WHERE id = %s AND user_id = %s "  # noqa: S608
+            f"RETURNING {_CLIENT_COLUMNS}",
+            [changes[f] for f in fields] + [client_id, user_id],
+        )
+        row = cur.fetchone()
+    return _client(row) if row else None
+
+
+def delete_client(user_id, client_id):
+    """Supprime la fiche ; les devis existants gardent le nom du client."""
+    with cursor() as cur:
+        cur.execute("DELETE FROM clients WHERE id = %s AND user_id = %s", (client_id, user_id))
+        return cur.rowcount > 0
+
+
+_QUOTE_COLUMNS = "id, client_id, client_name, number, status, currency, vat_rate, notes, created_at, updated_at"
+
+
+def _quote(row, lines=()):
+    return {
+        "id": row[0], "client_id": row[1], "client_name": row[2], "number": row[3], "status": row[4],
+        "currency": row[5], "vat_rate": row[6], "notes": row[7], "created_at": row[8], "updated_at": row[9],
+        "lines": list(lines),
+    }
+
+
+def _quote_lines(cur, quote_ids):
+    cur.execute(
+        "SELECT quote_id, description, quantity, unit_price FROM quote_lines "
+        "WHERE quote_id = ANY(%s) ORDER BY quote_id, position",
+        (list(quote_ids),),
+    )
+    grouped = {}
+    for quote_id, description, quantity, unit_price in cur.fetchall():
+        grouped.setdefault(quote_id, []).append(
+            {"description": description, "quantity": quantity, "unit_price": unit_price}
+        )
+    return grouped
+
+
+def create_quote(user_id, client_id, client_name, lines, vat_rate, currency, notes=None, max_quotes=None, year=None):
+    """Crée un devis et son numéro (DV-AAAA-NNN, continu par année). `year` : pour les tests."""
+    max_quotes = MAX_QUOTES if max_quotes is None else max_quotes
+    with cursor() as cur:
+        _lock_clients(cur, user_id)
+        cur.execute("SELECT count(*) FROM quotes WHERE user_id = %s", (user_id,))
+        if max_quotes and cur.fetchone()[0] >= max_quotes:
+            raise QuoteLimit(max_quotes)
+        if year is None:
+            cur.execute("SELECT extract(year FROM now() AT TIME ZONE %s)::int", (os.environ.get("TIMEZONE", "UTC"),))
+            year = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO quote_counters (user_id, year, last_seq) VALUES (%s, %s, 1) "
+            "ON CONFLICT (user_id, year) DO UPDATE SET last_seq = quote_counters.last_seq + 1 RETURNING last_seq",
+            (user_id, year),
+        )
+        number = f"DV-{year}-{cur.fetchone()[0]:03d}"
+        cur.execute(
+            f"INSERT INTO quotes (user_id, client_id, client_name, number, currency, vat_rate, notes) "  # noqa: S608
+            f"VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING {_QUOTE_COLUMNS}",
+            (user_id, client_id, client_name, number, currency, vat_rate, notes),
+        )
+        row = cur.fetchone()
+        for position, line in enumerate(lines, start=1):
+            cur.execute(
+                "INSERT INTO quote_lines (quote_id, position, description, quantity, unit_price) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (row[0], position, line["description"], line["quantity"], line["unit_price"]),
+            )
+        return _quote(row, _quote_lines(cur, [row[0]]).get(row[0], []))
+
+
+def get_quote(user_id, ref):
+    """Un devis par numéro complet (DV-2026-003, casse ignorée) ou par numéro d'ordre de l'année en cours (3)."""
+    ref = str(ref).strip()
+    with cursor() as cur:
+        if ref.isdigit():
+            cur.execute("SELECT extract(year FROM now() AT TIME ZONE %s)::int", (os.environ.get("TIMEZONE", "UTC"),))
+            ref = f"DV-{cur.fetchone()[0]}-{int(ref):03d}"
+        cur.execute(
+            f"SELECT {_QUOTE_COLUMNS} FROM quotes WHERE user_id = %s AND upper(number) = upper(%s)",  # noqa: S608
+            (user_id, ref),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _quote(row, _quote_lines(cur, [row[0]]).get(row[0], []))
+
+
+def list_quotes(user_id, status=None, limit=20):
+    """Devis récents d'abord, avec leurs lignes (pour calculer les totaux)."""
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_QUOTE_COLUMNS} FROM quotes WHERE user_id = %s AND (%s::text IS NULL OR status = %s) "  # noqa: S608
+            "ORDER BY created_at DESC, id DESC LIMIT %s",
+            (user_id, status, status, limit),
+        )
+        rows = cur.fetchall()
+        grouped = _quote_lines(cur, [r[0] for r in rows]) if rows else {}
+        return [_quote(r, grouped.get(r[0], [])) for r in rows]
+
+
+def set_quote_status(user_id, ref, status):
+    quote = get_quote(user_id, ref)
+    if quote is None:
+        return None
+    with cursor() as cur:
+        cur.execute(
+            "UPDATE quotes SET status = %s, updated_at = now() WHERE id = %s AND user_id = %s",
+            (status, quote["id"], user_id),
+        )
+    return get_quote(user_id, quote["number"])
+
+
+def delete_quote(user_id, ref):
+    """Supprime un brouillon ou un devis refusé ; un devis envoyé ou accepté est conservé."""
+    quote = get_quote(user_id, ref)
+    if quote is None:
+        return None
+    if quote["status"] in ("envoye", "accepte"):
+        raise QuoteLocked(quote["status"])
+    with cursor() as cur:
+        cur.execute("DELETE FROM quotes WHERE id = %s AND user_id = %s", (quote["id"], user_id))
+    return quote

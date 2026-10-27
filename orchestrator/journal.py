@@ -23,6 +23,12 @@ EVENT_LABELS = {
     "mail_draft": "E-mail rédigé",
     "mail_improve": "E-mail amélioré",
     "mail_summary": "E-mail résumé",
+    "client_created": "Client ajouté",
+    "client_updated": "Client modifié",
+    "client_deleted": "Client supprimé",
+    "quote_created": "Devis créé",
+    "quote_status": "Statut de devis modifié",
+    "quote_deleted": "Devis supprimé",
 }
 
 

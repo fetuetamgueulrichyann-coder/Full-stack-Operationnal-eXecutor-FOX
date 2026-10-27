@@ -203,6 +203,29 @@ FOX **ne lit pas ta boîte mail** (pas d'API Gmail) et **n'envoie rien** : il tr
 - Les testeurs y ont accès dans leurs quotas (Groq). Les appels comptent dans le quota journalier.
 - API : `POST /mail/draft` (`instruction`), `/mail/improve` et `/mail/summary` (`text`). Aucune migration.
 
+## Clients et devis (phase C)
+
+Chaque utilisateur gère **ses propres** clients et devis (isolés des autres comptes).
+
+- **Clients** : `/clients` (liste), `/client Paul` (fiche), `/client ajoute Nom ; téléphone ; e-mail ; adresse` (tout sauf le nom est facultatif), `/client modifie Paul ; téléphone ; e-mail ; adresse` (champ vide = inchangé, `-` = effacer), `/client supprime Paul`. Le nom peut être partiel s'il est unique ; sinon FOX liste les correspondances.
+- **Devis** : un message sur plusieurs lignes.
+  ```
+  /devis Paul Martin
+  Peinture salon | 2 | 15000
+  Main d'œuvre | 1,5 | 50000
+  TVA 18
+  note : paiement à 30 jours
+  ```
+  Format d'une ligne : `description | quantité | prix unitaire`. `TVA` et `note` sont facultatifs. Le client est relié à sa fiche s'il existe (sinon le devis garde le nom saisi et FOX le signale).
+- **Calculs en Python, jamais par l'IA** : Decimal, chaque ligne arrondie à la devise (arrondi commercial : 0,5 monte), TVA calculée sur le sous-total. Devise par défaut `XAF` (sans décimales) et TVA `19,25 %`, modifiables avec `DEFAULT_CURRENCY` et `DEFAULT_VAT_RATE`.
+- **Numérotation** `DV-AAAA-NNN`, continue par utilisateur et par année, jamais réutilisée (même après suppression).
+- **Statuts** : brouillon, envoyé, accepté, refusé. `/devis 3 accepté` ou les boutons sous le devis. `/devis 3` affiche le devis n° 3 de l'année, `/devis DV-2026-003` un devis précis.
+- **Suppression** : `/devis 3 supprime` pour un brouillon ou un devis refusé ; un devis envoyé ou accepté est conservé (passe-le d'abord en refusé). Supprimer un client garde ses devis (le nom y reste).
+- **Journal** : le fait seulement (« Devis créé »…), jamais les noms ni les montants.
+- **Limites** : `MAX_CLIENTS` (200), `MAX_QUOTES` (500), 30 lignes par devis.
+- **API** : `/clients` (GET, POST), `/clients/find?q=`, `/clients/<id>` (GET, PATCH, DELETE), `/quotes` (GET, POST), `/quotes/<n°>` (GET, PATCH `{"status"}`, DELETE). Les montants sont renvoyés formatés et en valeurs brutes (`amounts`).
+- Migration : `011_clients_devis.sql` (additive). Le PDF et l'envoi par e-mail d'un devis viendront ensuite.
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

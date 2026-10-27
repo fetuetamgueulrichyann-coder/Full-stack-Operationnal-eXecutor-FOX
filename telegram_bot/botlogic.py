@@ -353,6 +353,135 @@ def draft_message(draft):
     return "\n".join(lines + ([""] if lines else []) + ["```", body, "```"])
 
 
+ADD_WORDS = ("ajoute", "ajouter", "nouveau", "add")
+DELETE_WORDS = ("supprime", "supprimer", "efface", "effacer")
+EDIT_WORDS = ("modifie", "modifier", "change")
+CLIENT_HELP = (
+    "Clients :\n"
+    "/clients : liste de tes clients\n"
+    "/client Paul : fiche d'un client\n"
+    "/client ajoute Nom ; téléphone ; e-mail ; adresse : nouveau client (tout sauf le nom est facultatif)\n"
+    "/client modifie Paul ; téléphone ; e-mail ; adresse : changer des champs (vide = inchangé, - = effacer)\n"
+    "/client supprime Paul : supprimer la fiche (ses devis sont conservés)"
+)
+QUOTE_HELP = (
+    "Devis :\n"
+    "/devis : tes devis récents\n"
+    "/devis 3 : afficher le devis n° 3 de l'année (ou /devis DV-2026-003)\n"
+    "/devis 3 accepté : changer le statut (brouillon, envoyé, accepté, refusé)\n"
+    "/devis 3 supprime : supprimer un brouillon ou un devis refusé\n"
+    "Créer un devis (une ligne par prestation, sur plusieurs lignes) :\n"
+    "/devis Paul Martin\n"
+    "Peinture salon | 2 | 15000\n"
+    "Main d'œuvre | 1,5 | 50000\n"
+    "TVA 18 (facultatif)\n"
+    "note : paiement à 30 jours (facultatif)\n"
+    "Format d'une ligne : description | quantité | prix unitaire. Les totaux sont calculés par FOX."
+)
+QUOTE_REF = re.compile(r"(?i)(?:dv-\d{4}-\d{1,6}|\d{1,6})")
+QUOTE_STATUS_CODES = {"e": "envoyé", "a": "accepté", "r": "refusé"}
+
+
+def command_rest(raw):
+    """Texte qui suit le nom de la commande (les retours à la ligne sont conservés)."""
+    parts = str(raw or "").strip().split(None, 1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def client_command(raw):
+    """Texte de /client -> ("help",) | ("show", nom) | ("add", texte) | ("edit", nom, champs) | ("delete", nom)."""
+    rest = command_rest(raw)
+    if not rest:
+        return ("help",)
+    first, _, after = rest.partition(" ")
+    verb, after = first.lower().rstrip(":,"), after.strip()
+    if verb in ADD_WORDS:
+        return ("add", after) if after else ("help",)
+    if verb in DELETE_WORDS:
+        return ("delete", after) if after else ("help",)
+    if verb in EDIT_WORDS:
+        name, _, changes = after.partition(";")
+        return ("edit", name.strip(), changes) if name.strip() and changes.strip() else ("help",)
+    return ("show", rest)
+
+
+def quote_command(raw):
+    """Texte de /devis -> ("list",) | ("create", texte) | ("show", réf) | ("status", réf, mot) | ("delete", réf) | ("help",)."""
+    rest = command_rest(raw)
+    if not rest:
+        return ("list",)
+    if "\n" in rest or "|" in rest:
+        return ("create", rest)
+    words = rest.split()
+    if not QUOTE_REF.fullmatch(words[0]):
+        return ("help",)
+    if len(words) == 1:
+        return ("show", words[0])
+    word = " ".join(words[1:]).lower()
+    if word in DELETE_WORDS:
+        return ("delete", words[0])
+    return ("status", words[0], word)
+
+
+def clients_message(clients):
+    if not clients:
+        return "Aucun client pour l'instant. Ajoute-en un avec /client ajoute Nom ; téléphone ; e-mail ; adresse."
+    lines = [f"**Tes clients ({len(clients)})**"]
+    for client in clients:
+        extra = " · ".join(v for v in (client.get("phone"), client.get("email")) if v)
+        lines.append(f"- {client['name']}" + (f" ({extra})" if extra else ""))
+    lines.append("/client Nom pour la fiche complète.")
+    return "\n".join(lines)
+
+
+def client_message(client):
+    lines = [f"**{client['name']}**"]
+    for label, key in (("Téléphone", "phone"), ("E-mail", "email"), ("Adresse", "address"), ("Note", "notes")):
+        if client.get(key):
+            lines.append(f"{label} : {client[key]}")
+    if len(lines) == 1:
+        lines.append("Pas d'autres informations. /client modifie " + client["name"] + " ; téléphone ; e-mail ; adresse")
+    return "\n".join(lines)
+
+
+def clients_choice(clients):
+    names = ", ".join(c["name"] for c in clients)
+    return f"Plusieurs clients correspondent : {names}. Précise le nom complet."
+
+
+def quote_message(quote):
+    lines = [f"**Devis {quote['number']}** ({quote['status_label']})", f"Client : {quote['client']}", ""]
+    for line in quote["lines"]:
+        lines.append(f"- {line['description']} : {line['quantity']} × {line['unit_price']} = {line['total']}")
+    lines += [
+        "",
+        f"Sous-total : {quote['subtotal']}",
+        f"TVA {quote['vat_rate']} % : {quote['vat']}",
+        f"**Total : {quote['total']}**",
+    ]
+    if quote.get("notes"):
+        lines += ["", f"Note : {quote['notes']}"]
+    return "\n".join(lines)
+
+
+def quotes_message(quotes):
+    if not quotes:
+        return "Aucun devis pour l'instant. /devis pour voir comment en créer un."
+    lines = [f"**Tes devis ({len(quotes)})**"]
+    for quote in quotes:
+        lines.append(f"- {quote['number']} · {quote['client']} · {quote['total']} · {quote['status_label']}")
+    lines.append("/devis 3 pour afficher un devis.")
+    return "\n".join(lines)
+
+
+def quote_buttons(quote):
+    """Une ligne de boutons pour changer le statut (le statut actuel est omis)."""
+    codes = {"envoye": "e", "accepte": "a", "refuse": "r"}
+    labels = {"e": "Envoyé", "a": "Accepté", "r": "Refusé"}
+    row = [(labels[c], f"qs:{quote['number']}:{c}") for st, c in codes.items() if st != quote["status"]]
+    return [row]
+
+
 def briefing_command(args):
     """Argument de /briefing -> ("status",) | ("preview",) | ("set", payload) | ("invalid",)."""
     if not args:

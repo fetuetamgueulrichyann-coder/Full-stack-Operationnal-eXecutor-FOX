@@ -53,6 +53,6 @@ jour de ces deux documents. Dernière mise à jour : 19/10/2026 (phase A2a livr�
 4bis. Tâches persistantes : priorité, échéance, statut, suivi jusqu'à résolution (fait, phase B1). Rappels à l'heure d'une tâche, mémoire contrôlable (/memoire, /retiens) et journal des actions (/journal) : fait, phase B2. Briefing du matin avec tâches, échéances et agenda, activable par chacun (/briefing) : fait, phase B3. E-mails reliés aux tâches (/mail : brouillon avec lien Gmail, amélioration, résumé avec tâches à confirmer ; sans lecture de la boîte) : fait, phase B4.
 5. Agenda interne par utilisateur : fuseau horaire, conflits, outils de même nom que Google.
 6. E-mails : rédaction, amélioration, résumé, lien Gmail prérempli, bloc copiable (fait, phase B4).
-7. Module commercial : clients, devis (lignes, totaux, TVA, numérotation) calculés en Python.
+7. Module commercial : clients, devis (lignes, totaux, TVA, numérotation) calculés en Python (fait, phase C : /clients, /client, /devis ; PDF et envoi du devis à venir).
 8. PWA : API, chat, historique, agenda, clients et devis, vie privée, consommation, voix.
 9. Préparation du VPS : Docker Compose de production, HTTPS, sauvegardes, déploiement.

@@ -16,6 +16,7 @@ import formatting
 import journal
 import mail
 import memory
+import commercial
 import tasks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -468,6 +469,192 @@ def tasks_delete(task_id):
     if not db.delete_task(user["id"], task_id):
         return jsonify(error="tâche introuvable"), 404
     db.audit(user["id"], "task_deleted", None, {"task_id": task_id})
+    return jsonify(status="deleted")
+
+
+# --- Clients et devis (phase C) ----------------------------------------------------
+def input_error(exc):
+    return jsonify(error=str(exc)), 400
+
+
+def client_conflict(exc):
+    if isinstance(exc, db.DuplicateClient):
+        return jsonify(error="Un client porte déjà ce nom."), 409
+    return jsonify(error=f"Limite de {exc.args[0]} clients atteinte."), 409
+
+
+@app.get("/clients")
+def clients_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    items = db.list_clients(user["id"], (request.args.get("q") or "").strip() or None)
+    return jsonify(clients=[commercial.public_client(c) for c in items])
+
+
+@app.get("/clients/find")
+def clients_find():
+    user, error = chat_auth()
+    if error:
+        return error
+    name = (request.args.get("q") or "").strip()
+    if not name:
+        return jsonify(error="Nom du client manquant."), 400
+    return jsonify(clients=[commercial.public_client(c) for c in db.find_clients(user["id"], name)])
+
+
+@app.post("/clients")
+def clients_create():
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    try:
+        if "text" in data:  # « Nom ; téléphone ; e-mail ; adresse »
+            fields = commercial.parse_client(data["text"])
+        else:
+            fields = {"name": commercial.clean_name(data.get("name"))}
+            for key, label in commercial.FIELDS:
+                fields[key] = commercial.clean_optional(data.get(key), label)
+        client = db.create_client(user["id"], **fields)
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    except (db.DuplicateClient, db.ClientLimit) as exc:
+        return client_conflict(exc)
+    db.audit(user["id"], "client_created", None, {"client_id": client["id"]})
+    return jsonify(client=commercial.public_client(client)), 201
+
+
+@app.get("/clients/<int:client_id>")
+def clients_get(client_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    client = db.get_client(user["id"], client_id)
+    if client is None:
+        return jsonify(error="client introuvable"), 404
+    return jsonify(client=commercial.public_client(client))
+
+
+@app.patch("/clients/<int:client_id>")
+def clients_update(client_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    try:
+        if "text" in data:  # « téléphone ; e-mail ; adresse » (vide = inchangé, - = effacer)
+            changes = commercial.parse_client_changes(data["text"])
+        else:
+            changes = {}
+            if "name" in data:
+                changes["name"] = commercial.clean_name(data["name"])
+            for key, label in commercial.FIELDS:
+                if key in data:
+                    changes[key] = commercial.clean_optional(data[key], label)
+            if not changes:
+                return jsonify(error="aucune modification demandée"), 400
+        client = db.update_client(user["id"], client_id, **changes)
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    except db.DuplicateClient as exc:
+        return client_conflict(exc)
+    if client is None:
+        return jsonify(error="client introuvable"), 404
+    db.audit(user["id"], "client_updated", None, {"client_id": client_id, "fields": sorted(changes)})
+    return jsonify(client=commercial.public_client(client))
+
+
+@app.delete("/clients/<int:client_id>")
+def clients_delete(client_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.delete_client(user["id"], client_id):
+        return jsonify(error="client introuvable"), 404
+    db.audit(user["id"], "client_deleted", None, {"client_id": client_id})
+    return jsonify(status="deleted")
+
+
+@app.get("/quotes")
+def quotes_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    status = request.args.get("status")
+    try:
+        status = commercial.clean_status(status) if status else None
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    items = db.list_quotes(user["id"], status)
+    return jsonify(quotes=[commercial.public_quote_summary(q) for q in items])
+
+
+@app.post("/quotes")
+def quotes_create():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        parsed = commercial.parse_quote(body().get("text"))
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    matches = db.find_clients(user["id"], parsed["client"])
+    if len(matches) > 1:
+        names = ", ".join(c["name"] for c in matches)
+        return jsonify(error=f"Plusieurs clients correspondent : {names}. Précise le nom complet."), 409
+    client = matches[0] if matches else None
+    vat_rate = commercial.DEFAULT_VAT_RATE if parsed["vat_rate"] is None else parsed["vat_rate"]
+    try:
+        quote = db.create_quote(
+            user["id"], client["id"] if client else None, client["name"] if client else parsed["client"],
+            parsed["lines"], vat_rate, commercial.DEFAULT_CURRENCY, parsed["notes"],
+        )
+    except db.QuoteLimit as exc:
+        return jsonify(error=f"Limite de {exc.args[0]} devis atteinte."), 409
+    db.audit(user["id"], "quote_created", None, {"quote_id": quote["id"]})
+    return jsonify(quote=commercial.public_quote(quote), registered=client is not None), 201
+
+
+@app.get("/quotes/<ref>")
+def quotes_get(ref):
+    user, error = chat_auth()
+    if error:
+        return error
+    quote = db.get_quote(user["id"], ref)
+    if quote is None:
+        return jsonify(error="devis introuvable"), 404
+    return jsonify(quote=commercial.public_quote(quote))
+
+
+@app.patch("/quotes/<ref>")
+def quotes_update(ref):
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        status = commercial.clean_status(body().get("status"))
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    quote = db.set_quote_status(user["id"], ref, status)
+    if quote is None:
+        return jsonify(error="devis introuvable"), 404
+    db.audit(user["id"], "quote_status", None, {"quote_id": quote["id"], "status": status})
+    return jsonify(quote=commercial.public_quote(quote))
+
+
+@app.delete("/quotes/<ref>")
+def quotes_delete(ref):
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        quote = db.delete_quote(user["id"], ref)
+    except db.QuoteLocked:
+        return jsonify(error="Un devis envoyé ou accepté ne peut pas être supprimé. Passe-le d'abord en refusé."), 409
+    if quote is None:
+        return jsonify(error="devis introuvable"), 404
+    db.audit(user["id"], "quote_deleted", None, {"quote_id": quote["id"]})
     return jsonify(status="deleted")
 
 

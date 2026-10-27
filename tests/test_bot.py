@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,7 +365,7 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
     for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
@@ -552,7 +552,7 @@ def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
 
 
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail"} <= {c.command for c in bot.COMMANDS}
+    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis"} <= {c.command for c in bot.COMMANDS}
     for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal", "/briefing"):
         assert command in bot.HELP
 
@@ -1081,3 +1081,261 @@ def test_gmail_url_encode_et_ne_tronque_pas_le_court():
 def test_draft_message_neutralise_les_triple_apostrophes_inverses():
     text = botlogic.draft_message({"subject": "S", "body": "a ``` b"})
     assert text.count("```") == 2 and text.startswith("**Objet :** S")
+
+
+# --- Clients et devis (phase C) ----------------------------------------------------
+PAUL = {"id": 5, "name": "Paul Martin", "phone": "699123456", "email": "p@x.fr", "address": None, "notes": None}
+QUOTE_DATA = {
+    "id": 9, "number": "DV-2026-003", "status": "brouillon", "status_label": "brouillon", "client": "Paul Martin",
+    "client_id": 5, "currency": "XAF", "vat_rate": "19,25", "notes": "Paiement à 30 jours",
+    "lines": [{"description": "Peinture", "quantity": "2", "unit_price": "15 000 XAF", "total": "30 000 XAF"}],
+    "subtotal": "30 000 XAF", "vat": "5 775 XAF", "total": "35 775 XAF",
+}
+
+
+def text_update(text):
+    return update(text)
+
+
+def test_clients_liste(server, context):
+    server.routes[("GET", "/clients")] = Response(200, {"clients": [PAUL]})
+    upd, msg = update("/clients")
+    run(bot.clients_command(upd, context))
+    assert "Paul Martin" in msg.replies[0][0] and "699123456" in msg.replies[0][0]
+
+
+def test_clients_liste_vide(server, context):
+    server.routes[("GET", "/clients")] = Response(200, {"clients": []})
+    upd, msg = update("/clients")
+    run(bot.clients_command(upd, context))
+    assert "Aucun client" in msg.replies[0][0]
+
+
+def test_client_sans_argument_affiche_l_aide(server, context):
+    upd, msg = update("/client")
+    run(bot.client_cmd(upd, context))
+    assert server.calls == [] and msg.replies == [(bot.CLIENT_HELP, None)]
+
+
+def test_client_ajout(server, context):
+    server.routes[("POST", "/clients")] = Response(201, {"client": PAUL})
+    upd, msg = update("/client ajoute Paul Martin ; 699123456 ; p@x.fr")
+    run(bot.client_cmd(upd, context))
+    assert server.calls == [("POST", "/clients", 900, {"text": "Paul Martin ; 699123456 ; p@x.fr"})]
+    assert "Client ajouté" in msg.replies[0][0] and "Paul Martin" in msg.replies[0][0]
+
+
+def test_client_ajout_refuse_affiche_la_raison(server, context):
+    server.routes[("POST", "/clients")] = Response(409, {"error": "Un client porte déjà ce nom."})
+    upd, msg = update("/client ajoute Paul")
+    run(bot.client_cmd(upd, context))
+    assert msg.replies == [("Un client porte déjà ce nom.", None)]
+
+
+def test_client_fiche(server, context):
+    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    upd, msg = update("/client Paul")
+    run(bot.client_cmd(upd, context))
+    assert "Paul Martin" in msg.replies[0][0] and "p@x.fr" in msg.replies[0][0]
+
+
+def test_client_introuvable(server, context):
+    server.routes[("GET", "/clients/find?q=Zoe")] = Response(200, {"clients": []})
+    upd, msg = update("/client Zoe")
+    run(bot.client_cmd(upd, context))
+    assert "Je ne trouve pas de client « Zoe »" in msg.replies[0][0]
+
+
+def test_client_ambigu(server, context):
+    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL, {**PAUL, "id": 6, "name": "Paul Durand"}]})
+    upd, msg = update("/client supprime Paul")
+    run(bot.client_cmd(upd, context))
+    assert "Plusieurs clients correspondent : Paul Martin, Paul Durand" in msg.replies[0][0]
+    assert all(call[0] != "DELETE" for call in server.calls)
+
+
+def test_client_nom_encode_dans_l_url(server, context):
+    server.routes[("GET", "/clients/find?q=Andr%C3%A9%20%26%20Fils")] = Response(200, {"clients": []})
+    upd, msg = update("/client André & Fils")
+    run(bot.client_cmd(upd, context))
+    assert server.calls[0][1] == "/clients/find?q=Andr%C3%A9%20%26%20Fils"
+
+
+def test_client_modification(server, context):
+    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("PATCH", "/clients/5")] = Response(200, {"client": {**PAUL, "address": "Douala"}})
+    upd, msg = update("/client modifie Paul ; ; ; Douala")
+    run(bot.client_cmd(upd, context))
+    assert server.calls[-1] == ("PATCH", "/clients/5", 900, {"text": " ; ; Douala"})
+    assert "Client modifié" in msg.replies[0][0] and "Douala" in msg.replies[0][0]
+
+
+def test_client_modification_refusee(server, context):
+    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("PATCH", "/clients/5")] = Response(400, {"error": "Adresse e-mail non reconnue."})
+    upd, msg = update("/client modifie Paul ; ; zz")
+    run(bot.client_cmd(upd, context))
+    assert msg.replies == [("Adresse e-mail non reconnue.", None)]
+
+
+def test_client_suppression(server, context):
+    server.routes[("GET", "/clients/find?q=Paul")] = Response(200, {"clients": [PAUL]})
+    server.routes[("DELETE", "/clients/5")] = Response(200, {"status": "deleted"})
+    upd, msg = update("/client supprime Paul")
+    run(bot.client_cmd(upd, context))
+    assert "supprimé" in msg.replies[0][0] and "devis sont conservés" in msg.replies[0][0]
+
+
+@pytest.mark.parametrize("handler, text", [("clients_command", "/clients"), ("client_cmd", "/client Paul"), ("quote_cmd", "/devis")])
+def test_commandes_commerciales_erreurs_de_service(server, context, handler, text):
+    for status, expected in ((403, bot.NO_ACCOUNT), (500, bot.UNAVAILABLE), (429, bot.UNAVAILABLE)):
+        server.default = Response(status)
+        upd, msg = update(text, user_id=555)
+        run(getattr(bot, handler)(upd, context))
+        assert msg.replies[0][0] == expected
+        context.application.bot_data["unknown"].forget(555)
+
+
+@pytest.mark.parametrize("handler, text", [("clients_command", "/clients"), ("quote_cmd", "/devis")])
+def test_commandes_commerciales_serveur_indisponible(server, context, handler, text):
+    server.default = bot.httpx.ConnectError("hors ligne")
+    upd, msg = update(text)
+    run(getattr(bot, handler)(upd, context))
+    assert msg.replies == [(bot.UNAVAILABLE, None)]
+
+
+def test_devis_liste(server, context):
+    server.routes[("GET", "/quotes")] = Response(200, {"quotes": [QUOTE_DATA]})
+    upd, msg = update("/devis")
+    run(bot.quote_cmd(upd, context))
+    assert "DV-2026-003" in msg.replies[0][0] and "35 775 XAF" in msg.replies[0][0]
+
+
+def test_devis_aide(server, context):
+    for text in ("/devis aide", "/devis n'importe quoi"):
+        upd, msg = update(text)
+        run(bot.quote_cmd(upd, context))
+        assert msg.replies == [(bot.QUOTE_HELP, None)]
+    assert server.calls == []
+
+
+def test_devis_creation_multi_lignes_et_client_sans_fiche(server, context):
+    server.routes[("POST", "/quotes")] = Response(201, {"quote": QUOTE_DATA, "registered": False})
+    upd, msg = update("/devis Paul Martin\nPeinture | 2 | 15000")
+    run(bot.quote_cmd(upd, context))
+    assert server.calls == [("POST", "/quotes", 900, {"text": "Paul Martin\nPeinture | 2 | 15000"})]
+    text, markup = msg.replies[0]
+    assert "Devis DV-2026-003" in text and "Total : 35 775 XAF" in text and "Paiement à 30 jours" in text
+    assert buttons(markup) == [[("Envoyé", "qs:DV-2026-003:e"), ("Accepté", "qs:DV-2026-003:a"), ("Refusé", "qs:DV-2026-003:r")]]
+    assert "n'a pas de fiche client" in msg.replies[1][0]
+
+
+def test_devis_creation_client_connu_sans_rappel(server, context):
+    server.routes[("POST", "/quotes")] = Response(201, {"quote": QUOTE_DATA, "registered": True})
+    upd, msg = update("/devis Paul Martin\nPeinture | 2 | 15000")
+    run(bot.quote_cmd(upd, context))
+    assert len(msg.replies) == 1
+
+
+@pytest.mark.parametrize("status", [400, 409, 404])
+def test_devis_refus_affiche_la_raison(server, context, status):
+    server.routes[("POST", "/quotes")] = Response(status, {"error": "Raison précise."})
+    upd, msg = update("/devis Paul\nA | 1")
+    run(bot.quote_cmd(upd, context))
+    assert msg.replies == [("Raison précise.", None)]
+
+
+def test_devis_affichage_par_numero(server, context):
+    server.routes[("GET", "/quotes/3")] = Response(200, {"quote": QUOTE_DATA})
+    upd, msg = update("/devis 3")
+    run(bot.quote_cmd(upd, context))
+    assert "Devis DV-2026-003" in msg.replies[0][0]
+
+
+def test_devis_changement_de_statut(server, context):
+    server.routes[("PATCH", "/quotes/DV-2026-003")] = Response(200, {"quote": {**QUOTE_DATA, "status": "accepte", "status_label": "accepté"}})
+    upd, msg = update("/devis DV-2026-003 accepté")
+    run(bot.quote_cmd(upd, context))
+    assert server.calls == [("PATCH", "/quotes/DV-2026-003", 900, {"status": "accepté"})]
+    text, markup = msg.replies[0]
+    assert "(accepté)" in text and [b[0] for b in buttons(markup)[0]] == ["Envoyé", "Refusé"]
+
+
+def test_devis_suppression(server, context):
+    server.routes[("DELETE", "/quotes/3")] = Response(200, {"status": "deleted"})
+    upd, msg = update("/devis 3 supprime")
+    run(bot.quote_cmd(upd, context))
+    assert msg.replies == [("Devis supprimé.", None)]
+
+
+def test_devis_suppression_refusee(server, context):
+    server.routes[("DELETE", "/quotes/3")] = Response(409, {"error": "Un devis envoyé ou accepté ne peut pas être supprimé."})
+    upd, msg = update("/devis 3 supprime")
+    run(bot.quote_cmd(upd, context))
+    assert "ne peut pas être supprimé" in msg.replies[0][0]
+
+
+def quote_button(server, context, data, user_id=900):
+    query = Query(data, user_id)
+    query.message = Message("devis")
+    upd = SimpleNamespace(callback_query=query)
+    run(bot.on_quote_button(upd, context))
+    return query
+
+
+def test_bouton_de_statut(server, context):
+    server.routes[("PATCH", "/quotes/DV-2026-003")] = Response(200, {"quote": {**QUOTE_DATA, "status": "envoye", "status_label": "envoyé"}})
+    query = quote_button(server, context, "qs:DV-2026-003:e")
+    assert query.answered
+    assert server.calls == [("PATCH", "/quotes/DV-2026-003", 900, {"status": "envoyé"})]
+    assert "(envoyé)" in query.message.replies[0][0]
+
+
+@pytest.mark.parametrize("status, expected", [(404, "Le devis DV-2026-003 n'existe plus."), (500, bot.UNAVAILABLE), (403, bot.NO_ACCOUNT)])
+def test_bouton_de_statut_erreurs(server, context, status, expected):
+    server.default = Response(status)
+    query = quote_button(server, context, "qs:DV-2026-003:r", user_id=555)
+    assert query.message.replies[0][0] == expected
+
+
+def test_bouton_de_statut_serveur_indisponible(server, context):
+    server.default = bot.httpx.ConnectError("hors ligne")
+    assert quote_button(server, context, "qs:DV-2026-003:a").message.replies[0][0] == bot.UNAVAILABLE
+
+
+def test_bouton_de_statut_compte_inconnu_en_silence(server, context):
+    context.application.bot_data["unknown"].mark(900)
+    assert quote_button(server, context, "qs:DV-2026-003:a").message.replies[0][0] == bot.NO_ACCOUNT
+    assert server.calls == []
+
+
+# --- Lecture des commandes ----------------------------------------------------------
+@pytest.mark.parametrize("raw, expected", [
+    ("/client", ("help",)), ("/client Paul", ("show", "Paul")), ("/client Paul Martin", ("show", "Paul Martin")),
+    ("/client ajoute Paul ; 699", ("add", "Paul ; 699")), ("/client AJOUTE", ("help",)),
+    ("/client supprime Paul", ("delete", "Paul")), ("/client supprime", ("help",)),
+    ("/client modifie Paul ; 699 ; a@b.fr", ("edit", "Paul", " 699 ; a@b.fr")), ("/client modifie Paul", ("help",)),
+    ("/client modifie ; 699", ("help",)),
+])
+def test_client_command(raw, expected):
+    assert botlogic.client_command(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/devis", ("list",)), ("/devis 3", ("show", "3")), ("/devis dv-2026-003", ("show", "dv-2026-003")),
+    ("/devis 3 accepté", ("status", "3", "accepté")), ("/devis 3 supprime", ("delete", "3")),
+    ("/devis Paul\nA | 1 | 2", ("create", "Paul\nA | 1 | 2")), ("/devis Paul A | 1 | 2", ("create", "Paul A | 1 | 2")),
+    ("/devis Paul", ("help",)), ("/devis aide", ("help",)),
+])
+def test_quote_command(raw, expected):
+    assert botlogic.quote_command(raw) == expected
+
+
+def test_boutons_sans_le_statut_actuel():
+    for status, labels in (("brouillon", ["Envoyé", "Accepté", "Refusé"]), ("envoye", ["Accepté", "Refusé"]),
+                           ("accepte", ["Envoyé", "Refusé"]), ("refuse", ["Envoyé", "Accepté"])):
+        assert [b[0] for b in botlogic.quote_buttons({"number": "DV-2026-001", "status": status})[0]] == labels
+
+
+def test_fiche_client_sans_details():
+    assert "Pas d'autres informations" in botlogic.client_message({"name": "Paul"})

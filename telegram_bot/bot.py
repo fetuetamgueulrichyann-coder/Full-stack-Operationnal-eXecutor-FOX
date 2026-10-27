@@ -25,14 +25,25 @@ from botlogic import (
     action_message,
     briefing_command,
     briefing_status,
+    client_command,
+    client_message,
+    clients_choice,
+    clients_message,
     history_buttons,
+    CLIENT_HELP,
     MAIL_HELP,
+    QUOTE_HELP,
+    QUOTE_STATUS_CODES,
     draft_message,
     gmail_url,
     journal_message,
     memory_buttons,
     memory_message,
     parse_mail_command,
+    quote_buttons,
+    quote_command,
+    quote_message,
+    quotes_message,
     reminder_message,
     start_code,
     task_buttons,
@@ -68,6 +79,8 @@ HELP = (
     "/journal : voir ce que FOX a proposé et fait\n"
     "/briefing : briefing du matin (on, off, une heure comme 07:30, ou maintenant)\n"
     "/mail : rédiger, améliorer ou résumer un e-mail (rien n'est envoyé)\n"
+    "/clients : tes clients ; /client Nom pour une fiche, /client ajoute pour en créer\n"
+    "/devis : tes devis ; /devis Client + lignes pour en créer (détails avec /devis aide)\n"
     "/annuler : annuler la dernière action effectuée"
 )
 COMMANDS = [
@@ -82,6 +95,9 @@ COMMANDS = [
     BotCommand("journal", "Journal des actions"),
     BotCommand("briefing", "Briefing du matin"),
     BotCommand("mail", "Rédiger, améliorer, résumer un e-mail"),
+    BotCommand("clients", "Mes clients"),
+    BotCommand("client", "Fiche, ajout ou suppression d'un client"),
+    BotCommand("devis", "Mes devis, créer un devis"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
 ]
@@ -524,6 +540,171 @@ async def mail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     await send_action(message, action["summary"], action["id"])
 
 
+async def commercial_call(update, context, method, path, payload=None):
+    """Appel d'une commande clients/devis. Retourne la réponse, sauf transport en panne ou compte inconnu
+    (le bot a alors déjà répondu : retourne None). Les refus métier (400, 404, 409) sont rendus à l'appelant."""
+    message = update.effective_message
+    user_id = update.effective_user.id
+    if unknown(context).is_quiet(user_id):
+        await message.reply_text(NO_ACCOUNT)
+        return None
+    try:
+        response = await call(context, method, path, user_id, payload)
+    except httpx.HTTPError:
+        log.exception("echec de la requete vers l'orchestrateur")
+        await message.reply_text(UNAVAILABLE)
+        return None
+    if response.status_code == 403:
+        await refuse_unknown(update, context)
+        return None
+    if response.status_code >= 500 or response.status_code in (401, 415, 429):
+        log.error("Réponse inattendue de l'orchestrateur (%s) pour %s", response.status_code, path)
+        await message.reply_text(UNAVAILABLE)
+        return None
+    return response
+
+
+def refusal(response, default):
+    try:
+        return response.json().get("error") or default
+    except ValueError:
+        return default
+
+
+async def pick_client(update, context, name):
+    """Retourne la fiche du client désigné par son nom, ou None après avoir répondu (introuvable, ambigu)."""
+    from urllib.parse import quote as urlquote
+
+    response = await commercial_call(update, context, "GET", f"/clients/find?q={urlquote(name, safe='')}")
+    if response is None:
+        return None
+    if response.status_code >= 400:
+        await update.effective_message.reply_text(refusal(response, "Demande refusée."))
+        return None
+    found = response.json()["clients"]
+    if not found:
+        await update.effective_message.reply_text(f"Je ne trouve pas de client « {name} ». /clients pour la liste.")
+        return None
+    if len(found) > 1:
+        await update.effective_message.reply_text(clients_choice(found))
+        return None
+    return found[0]
+
+
+async def clients_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    response = await commercial_call(update, context, "GET", "/clients")
+    if response is not None:
+        await send_markdown(update.effective_message, clients_message(response.json()["clients"]))
+
+
+async def client_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    kind, *rest = client_command(message.text)
+    if kind == "help":
+        await message.reply_text(CLIENT_HELP)
+    elif kind == "add":
+        response = await commercial_call(update, context, "POST", "/clients", {"text": rest[0]})
+        if response is None:
+            return
+        if response.status_code >= 400:
+            await message.reply_text(refusal(response, "Demande refusée."))
+            return
+        await send_markdown(message, "Client ajouté.\n\n" + client_message(response.json()["client"]))
+    else:
+        client = await pick_client(update, context, rest[0])
+        if client is None:
+            return
+        if kind == "show":
+            await send_markdown(message, client_message(client))
+        elif kind == "edit":
+            response = await commercial_call(update, context, "PATCH", f"/clients/{client['id']}", {"text": rest[1]})
+            if response is None:
+                return
+            if response.status_code >= 400:
+                await message.reply_text(refusal(response, "Demande refusée."))
+                return
+            await send_markdown(message, "Client modifié.\n\n" + client_message(response.json()["client"]))
+        else:
+            response = await commercial_call(update, context, "DELETE", f"/clients/{client['id']}")
+            if response is None:
+                return
+            if response.status_code >= 400:
+                await message.reply_text(refusal(response, "Demande refusée."))
+                return
+            await message.reply_text(f"Client « {client['name']} » supprimé. Ses devis sont conservés.")
+
+
+async def show_quote(message, quote):
+    await send_markdown(message, quote_message(quote), keyboard(quote_buttons(quote)))
+
+
+async def quote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    text = message.text or ""
+    if text.split(None, 1)[-1].strip().lower() in ("aide", "help") and len(text.split(None, 1)) > 1:
+        await message.reply_text(QUOTE_HELP)
+        return
+    kind, *rest = quote_command(text)
+    if kind == "help":
+        await message.reply_text(QUOTE_HELP)
+        return
+    if kind == "list":
+        response = await commercial_call(update, context, "GET", "/quotes")
+        if response is not None:
+            await send_markdown(message, quotes_message(response.json()["quotes"]))
+        return
+    if kind == "create":
+        response = await commercial_call(update, context, "POST", "/quotes", {"text": rest[0]})
+    elif kind == "show":
+        response = await commercial_call(update, context, "GET", f"/quotes/{rest[0]}")
+    elif kind == "status":
+        response = await commercial_call(update, context, "PATCH", f"/quotes/{rest[0]}", {"status": rest[1]})
+    else:
+        response = await commercial_call(update, context, "DELETE", f"/quotes/{rest[0]}")
+    if response is None:
+        return
+    if response.status_code >= 400:
+        await message.reply_text(refusal(response, "Demande refusée."))
+        return
+    data = response.json()
+    if kind == "delete":
+        await message.reply_text("Devis supprimé.")
+        return
+    await show_quote(message, data["quote"])
+    if kind == "create" and not data.get("registered"):
+        await message.reply_text(
+            f"« {data['quote']['client']} » n'a pas de fiche client. "
+            f"Tu peux l'ajouter avec /client ajoute {data['quote']['client']} ; téléphone ; e-mail ; adresse."
+        )
+
+
+async def on_quote_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Boutons Envoyé / Accepté / Refusé sous un devis."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    _, number, code = (query.data or "").split(":")
+    if unknown(context).is_quiet(user_id):
+        await query.message.reply_text(NO_ACCOUNT)
+        return
+    try:
+        response = await call(context, "PATCH", f"/quotes/{number}", user_id, {"status": QUOTE_STATUS_CODES[code]})
+    except httpx.HTTPError:
+        log.exception("echec de la mise à jour du devis")
+        await query.message.reply_text(UNAVAILABLE)
+        return
+    if response.status_code == 403:
+        unknown(context).mark(user_id)
+        await query.message.reply_text(NO_ACCOUNT)
+    elif response.status_code == 404:
+        await query.message.reply_text(f"Le devis {number} n'existe plus.")
+    elif response.status_code >= 400:
+        await query.message.reply_text(UNAVAILABLE)
+    else:
+        quote = response.json()["quote"]
+        await show_quote(query.message, quote)
+
+
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     kind, *rest = briefing_command(context.args)
@@ -786,6 +967,9 @@ def main() -> None:
         ("journal", journal_command),
         ("briefing", briefing_cmd),
         ("mail", mail_command),
+        ("clients", clients_command),
+        ("client", client_cmd),
+        ("devis", quote_cmd),
         ("annuler", undo_command),
     ):
         application.add_handler(CommandHandler(name, handler, filters=private))
@@ -793,6 +977,7 @@ def main() -> None:
         CallbackQueryHandler(on_decision, pattern=r"^(ok|no):[0-9a-fA-F-]{36}$")
     )
     application.add_handler(CallbackQueryHandler(on_memory_button, pattern=r"^(mdel:[0-9]{1,18}|mall|mall_ok)$"))
+    application.add_handler(CallbackQueryHandler(on_quote_button, pattern=r"^qs:DV-[0-9]{4}-[0-9]{3,6}:[ear]$"))
     application.add_handler(CallbackQueryHandler(on_task_button, pattern=r"^(tdone|tcancel):[0-9]{1,18}$"))
     application.add_handler(
         CallbackQueryHandler(on_manage, pattern=r"^(open:[0-9]{1,18}|del:[0-9]{1,18}|delall|delall_ok|keep)$")
