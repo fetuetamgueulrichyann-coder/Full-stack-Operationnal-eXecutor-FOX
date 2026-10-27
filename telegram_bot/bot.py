@@ -26,9 +26,13 @@ from botlogic import (
     briefing_command,
     briefing_status,
     history_buttons,
+    MAIL_HELP,
+    draft_message,
+    gmail_url,
     journal_message,
     memory_buttons,
     memory_message,
+    parse_mail_command,
     reminder_message,
     start_code,
     task_buttons,
@@ -63,6 +67,7 @@ HELP = (
     "/retiens phrase : demander à FOX de retenir une information\n"
     "/journal : voir ce que FOX a proposé et fait\n"
     "/briefing : briefing du matin (on, off, une heure comme 07:30, ou maintenant)\n"
+    "/mail : rédiger, améliorer ou résumer un e-mail (rien n'est envoyé)\n"
     "/annuler : annuler la dernière action effectuée"
 )
 COMMANDS = [
@@ -76,6 +81,7 @@ COMMANDS = [
     BotCommand("retiens", "Faire retenir une information"),
     BotCommand("journal", "Journal des actions"),
     BotCommand("briefing", "Briefing du matin"),
+    BotCommand("mail", "Rédiger, améliorer, résumer un e-mail"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
 ]
@@ -100,15 +106,20 @@ def keyboard(rows):
 
 
 async def send_markdown(message, text, reply_markup=None):
-    """Envoie un texte Markdown en HTML Telegram ; texte brut si Telegram refuse le HTML."""
-    for rendered, plain in telegram_messages(text):
+    """Envoie un texte Markdown en HTML Telegram ; texte brut si Telegram refuse le HTML.
+
+    Les boutons éventuels sont attachés au dernier message.
+    """
+    parts = telegram_messages(text)
+    for index, (rendered, plain) in enumerate(parts):
+        markup = reply_markup if index == len(parts) - 1 else None
         if rendered is not None:
             try:
-                await message.reply_text(rendered, parse_mode=ParseMode.HTML)
+                await message.reply_text(rendered, parse_mode=ParseMode.HTML, reply_markup=markup)
                 continue
             except BadRequest:
                 log.warning("Telegram a refusé le HTML : envoi en texte brut")
-        await message.reply_text(plain)
+        await message.reply_text(plain, reply_markup=markup)
 
 
 async def send_action(message, summary, action_id):
@@ -458,6 +469,61 @@ async def journal_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await send_markdown(update.effective_message, journal_message(response.json()["entries"]))
 
 
+MAIL_ROUTES = {"draft": ("/mail/draft", "instruction"), "improve": ("/mail/improve", "text"), "summary": ("/mail/summary", "text")}
+
+
+async def mail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    replied = getattr(getattr(message, "reply_to_message", None), "text", None)
+    mode, text = parse_mail_command(message.text, replied)
+    if mode == "help":
+        await message.reply_text(MAIL_HELP)
+        return
+    user_id = update.effective_user.id
+    if unknown(context).is_quiet(user_id):
+        await message.reply_text(NO_ACCOUNT)
+        return
+    path, field = MAIL_ROUTES[mode]
+    await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+    try:
+        response = await call(context, "POST", path, user_id, {field: text})
+    except httpx.HTTPError:
+        log.exception("echec de la requete vers l'orchestrateur")
+        await message.reply_text(UNAVAILABLE)
+        return
+    status = response.status_code
+    if status == 403:
+        await refuse_unknown(update, context)
+    elif status == 429:
+        await message.reply_text("Limite journalière atteinte.")
+    elif status == 413:
+        await message.reply_text("Texte trop long (4 000 caractères maximum).")
+    elif status == 400:
+        await message.reply_text(response.json().get("error", "Demande refusée."))
+    elif status == 503:
+        await message.reply_text("Le modèle est très sollicité ou son quota est atteint. Réessaie dans un instant.")
+    elif status >= 400:
+        log.error("Réponse inattendue de l'orchestrateur (%s) pour %s", status, path)
+        await message.reply_text(UNAVAILABLE)
+    else:
+        data = response.json()
+        if mode == "draft":
+            url, truncated = gmail_url(data)
+            markup = InlineKeyboardMarkup([[InlineKeyboardButton("Ouvrir dans Gmail", url=url)]])
+            await send_markdown(message, draft_message(data), markup)
+            if truncated:
+                await message.reply_text("Le texte est long : Gmail n'en reçoit qu'une partie. Copie le bloc ci-dessus pour tout garder.")
+        elif mode == "improve":
+            await send_markdown(message, draft_message({"body": data["text"]}))
+        else:
+            await send_markdown(message, "**Résumé**\n" + data["summary"])
+            pending = data.get("pending") or []
+            if pending:
+                await message.reply_text("Tâches repérées dans ce mail. Confirme celles que tu veux :")
+                for action in pending:
+                    await send_action(message, action["summary"], action["id"])
+
+
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     kind, *rest = briefing_command(context.args)
@@ -719,6 +785,7 @@ def main() -> None:
         ("retiens", remember_command),
         ("journal", journal_command),
         ("briefing", briefing_cmd),
+        ("mail", mail_command),
         ("annuler", undo_command),
     ):
         application.add_handler(CommandHandler(name, handler, filters=private))

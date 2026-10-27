@@ -14,6 +14,7 @@ import db
 import briefing
 import formatting
 import journal
+import mail
 import memory
 import tasks
 
@@ -594,3 +595,65 @@ def briefings_claim():
         except Exception:
             log.exception("echec de la construction du briefing")
     return jsonify(briefings=items)
+
+
+# --- E-mails ---------------------------------------------------------------------
+def mail_endpoint(field, operation, audit_event):
+    """Opération sur un texte collé (rédiger, améliorer, résumer). Quotas et erreurs comme /message."""
+    data = body()
+    user, error = authenticate(data)
+    if error:
+        return None, error
+    text = (data.get(field) or "").strip()
+    if not text:
+        return None, (jsonify(error=f"{field} est requis"), 400)
+    if len(text) > MAX_INPUT_CHARS:
+        return None, (jsonify(error="texte trop long"), 413)
+    user_calls, user_tokens = user_limits(user["role"])
+    try:
+        db.reserve_quota(user["id"], user_calls, user_tokens, MAX_CALLS_PER_DAY, MAX_TOKENS_PER_DAY)
+    except db.QuotaExceeded as exc:
+        return None, (jsonify(error="plafond journalier atteint", scope=exc.scope), 429)
+    try:
+        result, tokens = operation(user, text)
+    except mail.MailInputError as exc:
+        return None, (jsonify(error=str(exc)), 400)
+    except agent.ProviderQuotaExceeded:
+        return None, (jsonify(error="capacite du service atteinte"), 503)
+    except agent.LLMUnavailable:
+        return None, (jsonify(error="modele indisponible"), 503)
+    except errors.APIError as exc:
+        log.error("Erreur Gemini non temporaire (code=%s, statut=%s) : %s", exc.code, exc.status, exc.message)
+        return None, (jsonify(error="erreur modele", code=exc.code), 502)
+    except Exception:
+        log.exception("echec de l'operation e-mail")
+        return None, (jsonify(error="service indisponible"), 502)
+    if tokens:
+        db.add_tokens(user["id"], tokens)
+    db.audit(user["id"], audit_event, None, {})
+    return (user, result), None
+
+
+@app.post("/mail/draft")
+def mail_draft():
+    done, error = mail_endpoint("instruction", lambda user, text: mail.draft(user["role"], text), "mail_draft")
+    if error:
+        return error
+    return jsonify(**done[1])
+
+
+@app.post("/mail/improve")
+def mail_improve():
+    done, error = mail_endpoint("text", lambda user, text: mail.improve(user["role"], text), "mail_improve")
+    if error:
+        return error
+    return jsonify(text=done[1])
+
+
+@app.post("/mail/summary")
+def mail_summary():
+    done, error = mail_endpoint("text", lambda user, text: mail.summarize(user["role"], text), "mail_summary")
+    if error:
+        return error
+    user, result = done
+    return jsonify(summary=result["summary"], pending=mail.propose_tasks(user["id"], result["tasks"]))

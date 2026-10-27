@@ -20,6 +20,9 @@ EVENT_LABELS = {
     "memory_cleared": "Mémoire effacée",
     "chat_deleted": "Conversation supprimée",
     "history_deleted": "Historique supprimé",
+    "mail_draft": "E-mail rédigé",
+    "mail_improve": "E-mail amélioré",
+    "mail_summary": "E-mail résumé",
 }
 
 

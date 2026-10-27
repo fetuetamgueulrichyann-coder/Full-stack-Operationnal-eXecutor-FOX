@@ -291,6 +291,68 @@ def memory_buttons(items):
     return rows
 
 
+IMPROVE_WORDS = ("améliore", "ameliore", "améliorer", "corrige", "corriger", "reformule")
+SUMMARY_WORDS = ("résume", "resume", "résumé", "résumer", "resumer")
+GMAIL_URL_LIMIT = 1900  # les liens des boutons Telegram sont limités (environ 2000 caractères)
+MAIL_HELP = (
+    "Utilisation de /mail :\n"
+    "/mail rédige une relance polie à Paul pour la facture : FOX écrit un brouillon (rien n'est envoyé)\n"
+    "/mail améliore + ton texte : correction et reformulation\n"
+    "/mail résume + le mail collé : résumé et tâches à confirmer\n"
+    "Tu peux aussi répondre à un message avec /mail résume ou /mail améliore."
+)
+
+
+def parse_mail_command(raw, replied=None):
+    """Texte complet de la commande -> ("draft"|"improve"|"summary", texte) ou ("help", None).
+
+    Les retours à la ligne du mail collé sont conservés. Pour « améliore » et « résume », le texte à
+    traiter peut venir du message auquel on répond.
+    """
+    parts = str(raw or "").strip().split(None, 1)
+    rest = parts[1].strip() if len(parts) > 1 else ""
+    words = rest.split(None, 1)
+    first = words[0].lower().rstrip(":,.") if words else ""
+    after = words[1].strip() if len(words) > 1 else ""
+    for mode, verbs in (("improve", IMPROVE_WORDS), ("summary", SUMMARY_WORDS)):
+        if first in verbs:
+            text = after or str(replied or "").strip()
+            return (mode, text) if text else ("help", None)
+    return ("draft", rest) if rest else ("help", None)
+
+
+def gmail_url(draft):
+    """Lien Gmail avec destinataire, objet et texte préremplis. Retourne (lien, tronqué)."""
+    from urllib.parse import quote
+
+    def build(body):
+        return (
+            "https://mail.google.com/mail/?view=cm&fs=1"
+            f"&to={quote(draft.get('to') or '', safe='')}&su={quote(draft.get('subject') or '', safe='')}"
+            f"&body={quote(body, safe='')}"
+        )
+
+    body = draft.get("body") or ""
+    url = build(body)
+    if len(url) <= GMAIL_URL_LIMIT:
+        return url, False
+    while len(url) > GMAIL_URL_LIMIT and body:
+        body = body[: max(0, len(body) - max(50, (len(url) - GMAIL_URL_LIMIT) // 2))]
+        url = build(body.rstrip())
+    return url, True
+
+
+def draft_message(draft):
+    """Brouillon en Markdown : objet, destinataire, puis le texte dans un bloc copiable d'un appui."""
+    lines = []
+    if draft.get("subject"):
+        lines.append(f"**Objet :** {draft['subject']}")
+    if draft.get("to"):
+        lines.append(f"**À :** {draft['to']}")
+    body = str(draft.get("body") or "").replace("```", "ʼʼʼ")
+    return "\n".join(lines + ([""] if lines else []) + ["```", body, "```"])
+
+
 def briefing_command(args):
     """Argument de /briefing -> ("status",) | ("preview",) | ("set", payload) | ("invalid",)."""
     if not args:

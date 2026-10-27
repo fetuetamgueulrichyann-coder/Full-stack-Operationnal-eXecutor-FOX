@@ -190,6 +190,19 @@ Chaque utilisateur peut recevoir sur Telegram un résumé de sa journée, à l'h
 - Les tâches sans heure sont ainsi rappelées par le briefing ; celles avec une heure gardent leur rappel à l'heure exacte (phase B2).
 - Migration : `010_briefing.sql` (additive).
 
+## E-mails (phase B4)
+
+FOX **ne lit pas ta boîte mail** (pas d'API Gmail) et **n'envoie rien** : il travaille sur le texte que tu lui donnes.
+
+- `/mail relance Paul pour la facture` : brouillon (objet, destinataire s'il est cité, texte) avec un bloc copiable d'un appui et un bouton **Ouvrir dans Gmail** (message prérempli, à relire et envoyer toi-même).
+- `/mail améliore <texte>` : correction et reformulation sans changer le sens.
+- `/mail résume <mail collé>` : résumé et tâches repérées. Les tâches sont **proposées** avec les boutons Confirmer / Annuler habituels, jamais créées seules.
+- Pour « améliore » et « résume », on peut aussi répondre à un message avec la commande.
+- Le texte du mail est traité comme une **donnée**, pas comme des instructions (protection contre l'injection de consignes). Limite : 4 000 caractères.
+- **Rien n'est conservé** : ni le mail ni la réponse (même hors mode privé) ; le journal garde seulement le fait (« E-mail rédigé / amélioré / résumé »).
+- Les testeurs y ont accès dans leurs quotas (Groq). Les appels comptent dans le quota journalier.
+- API : `POST /mail/draft` (`instruction`), `/mail/improve` et `/mail/summary` (`text`). Aucune migration.
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

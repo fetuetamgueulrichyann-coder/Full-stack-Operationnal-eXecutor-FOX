@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,7 +365,7 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
     for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
@@ -552,7 +552,7 @@ def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
 
 
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing"} <= {c.command for c in bot.COMMANDS}
+    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail"} <= {c.command for c in bot.COMMANDS}
     for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal", "/briefing"):
         assert command in bot.HELP
 
@@ -960,3 +960,124 @@ def test_la_boucle_envoie_rappels_et_briefings(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         run(asyncio.wait_for(bot.reminder_loop(SimpleNamespace()), timeout=3))  # sans envoi des briefings : TimeoutError
     assert seen == ["rappels", "briefings"]
+
+
+# --- /mail (B4) ---------------------------------------------------------------
+def mail_update(text, replied=None):
+    upd, msg = update(text)
+    msg.reply_to_message = SimpleNamespace(text=replied) if replied is not None else None
+    return upd, msg
+
+
+def test_mail_sans_texte_affiche_l_aide(server, context):
+    upd, msg = mail_update("/mail")
+    run(bot.mail_command(upd, context))
+    assert server.calls == [] and msg.replies == [(bot.MAIL_HELP, None)]
+
+
+def test_mail_brouillon_avec_bouton_gmail(server, context):
+    server.routes[("POST", "/mail/draft")] = Response(200, {"to": "paul@x.fr", "subject": "Relance", "body": "Bonjour Paul"})
+    upd, msg = mail_update("/mail relance Paul")
+    run(bot.mail_command(upd, context))
+    assert server.calls == [("POST", "/mail/draft", 900, {"instruction": "relance Paul"})]
+    text, markup = msg.replies[0]
+    assert "Relance" in text and "paul@x.fr" in text and "Bonjour Paul" in text
+    button = markup.inline_keyboard[0][0]
+    assert button.text == "Ouvrir dans Gmail" and button.url.startswith("https://mail.google.com/mail/?view=cm")
+    assert "to=paul%40x.fr" in button.url and len(msg.replies) == 1
+
+
+def test_mail_long_brouillon_previent_de_la_troncature(server, context):
+    server.routes[("POST", "/mail/draft")] = Response(200, {"to": "", "subject": "S", "body": "mot " * 1500})
+    upd, msg = mail_update("/mail rédige")
+    run(bot.mail_command(upd, context))
+    marked = [markup for _, markup in msg.replies if markup is not None]
+    assert len(marked) == 1 and len(marked[0].inline_keyboard[0][0].url) <= botlogic.GMAIL_URL_LIMIT
+    assert "Gmail n'en reçoit qu'une partie" in msg.replies[-1][0]
+
+
+def test_mail_ameliore_depuis_un_message_cite(server, context):
+    server.routes[("POST", "/mail/improve")] = Response(200, {"text": "Texte corrigé"})
+    upd, msg = mail_update("/mail améliore", replied="texte a corriger")
+    run(bot.mail_command(upd, context))
+    assert server.calls == [("POST", "/mail/improve", 900, {"text": "texte a corriger"})]
+    assert "Texte corrigé" in msg.replies[0][0] and msg.replies[0][1] is None
+
+
+def test_mail_resume_propose_les_taches_a_confirmer(server, context):
+    server.routes[("POST", "/mail/summary")] = Response(200, {
+        "summary": "Paul veut un devis.",
+        "pending": [{"id": 31, "summary": "Créer la tâche « Devis »"}],
+    })
+    upd, msg = mail_update("/mail résume Bonjour,\npouvez-vous envoyer le devis ?")
+    run(bot.mail_command(upd, context))
+    assert server.calls == [("POST", "/mail/summary", 900, {"text": "Bonjour,\npouvez-vous envoyer le devis ?"})]
+    assert "Paul veut un devis." in msg.replies[0][0]
+    assert "Confirme" in msg.replies[1][0]
+    assert "Devis" in msg.replies[2][0] and msg.replies[2][1] is not None
+
+
+def test_mail_resume_sans_tache(server, context):
+    server.routes[("POST", "/mail/summary")] = Response(200, {"summary": "Rien à faire.", "pending": []})
+    upd, msg = mail_update("/mail résume un mail")
+    run(bot.mail_command(upd, context))
+    assert len(msg.replies) == 1
+
+
+@pytest.mark.parametrize("status, expected", [
+    (429, "Limite journalière atteinte."),
+    (413, "Texte trop long (4 000 caractères maximum)."),
+    (400, "Demande refusée."),
+    (503, "Le modèle est très sollicité ou son quota est atteint. Réessaie dans un instant."),
+    (500, bot.UNAVAILABLE),
+    (403, bot.NO_ACCOUNT),
+])
+def test_mail_erreurs_du_serveur(server, context, status, expected):
+    server.routes[("POST", "/mail/draft")] = Response(status)
+    upd, msg = mail_update("/mail relance", )
+    run(bot.mail_command(upd, context))
+    assert msg.replies[0][0] == expected
+
+
+def test_mail_serveur_indisponible(server, context):
+    server.routes[("POST", "/mail/draft")] = bot.httpx.ConnectError("hors ligne")
+    upd, msg = mail_update("/mail relance")
+    run(bot.mail_command(upd, context))
+    assert msg.replies == [(bot.UNAVAILABLE, None)]
+
+
+def test_mail_inconnu_en_silence_ne_sollicite_pas_le_serveur(server, context):
+    context.application.bot_data["unknown"].mark(900)
+    upd, msg = mail_update("/mail relance")
+    run(bot.mail_command(upd, context))
+    assert server.calls == [] and msg.replies == [(bot.NO_ACCOUNT, None)]
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/mail", ("help", None)),
+    ("/mail   ", ("help", None)),
+    ("/mail relance Paul", ("draft", "relance Paul")),
+    ("/mail améliore ce texte", ("improve", "ce texte")),
+    ("/mail CORRIGE: ce texte", ("improve", "ce texte")),
+    ("/mail résume\nligne 1\nligne 2", ("summary", "ligne 1\nligne 2")),
+    ("/mail résume", ("help", None)),
+    ("/mail améliore", ("help", None)),
+    ("/mail@FoxBot relance", ("draft", "relance")),
+])
+def test_parse_mail_command(raw, expected):
+    assert botlogic.parse_mail_command(raw) == expected
+
+
+def test_parse_mail_command_texte_cite():
+    assert botlogic.parse_mail_command("/mail résume", "mail cité") == ("summary", "mail cité")
+    assert botlogic.parse_mail_command("/mail résume mon texte", "cité") == ("summary", "mon texte")
+
+
+def test_gmail_url_encode_et_ne_tronque_pas_le_court():
+    url, truncated = botlogic.gmail_url({"to": "a@b.fr", "subject": "Café & thé", "body": "Ligne 1\nLigne 2"})
+    assert not truncated and "su=Caf%C3%A9%20%26%20th%C3%A9" in url and "body=Ligne%201%0ALigne%202" in url
+
+
+def test_draft_message_neutralise_les_triple_apostrophes_inverses():
+    text = botlogic.draft_message({"subject": "S", "body": "a ``` b"})
+    assert text.count("```") == 2 and text.startswith("**Objet :** S")

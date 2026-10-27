@@ -224,21 +224,16 @@ def propose_undo(user_id):
 
 
 # --- Secours Groq (conversation seule, sans outils) ---------------------------
-def groq_reply(user_id, text, chat_id=None, private=False):
-    """Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue aussi."""
+def groq_complete(messages, temperature=0.7):
+    """Appel Groq avec plafond journalier. Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue."""
     if not db.reserve_provider("groq", GROQ_MAX_CALLS_PER_DAY, GROQ_MAX_TOKENS_PER_DAY):
         log.warning("Plafond journalier Groq atteint")
         raise ProviderQuotaExceeded("plafond Groq atteint")
-    messages = [{"role": "system", "content": system_prompt(with_tools=False, user_id=user_id)}]
-    for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT, chat_id, private):
-        messages.append({"role": "user", "content": user_message})
-        messages.append({"role": "assistant", "content": bot_reply})
-    messages.append({"role": "user", "content": text})
     try:
         response = httpx.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": GROQ_MODEL, "messages": messages, "temperature": 0.7},
+            json={"model": GROQ_MODEL, "messages": messages, "temperature": temperature},
             timeout=GROQ_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
@@ -255,6 +250,47 @@ def groq_reply(user_id, text, chat_id=None, private=False):
     if tokens:
         db.add_provider_tokens("groq", tokens)
     return reply, tokens
+
+
+def groq_reply(user_id, text, chat_id=None, private=False):
+    """Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue aussi."""
+    messages = [{"role": "system", "content": system_prompt(with_tools=False, user_id=user_id)}]
+    for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT, chat_id, private):
+        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "assistant", "content": bot_reply})
+    messages.append({"role": "user", "content": text})
+    return groq_complete(messages)
+
+
+# --- Tâche ponctuelle sans conversation (e-mails) ------------------------------
+def complete(role, system, prompt):
+    """Une seule génération, sans historique ni outils. Retourne (texte, tokens).
+
+    Même routage que la conversation : le propriétaire utilise Gemini (secours Groq),
+    les testeurs uniquement Groq.
+    """
+    if role != "owner":
+        if not GROQ_API_KEY:
+            raise LLMUnavailable("aucun fournisseur disponible pour ce rôle")
+        return groq_complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": prompt}], temperature=0.4
+        )
+    config = types.GenerateContentConfig(system_instruction=system, temperature=0.4)
+    contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
+    try:
+        response, _ = generate_with_retry(contents, config, GEMINI_MODEL, can_switch=True)
+    except LLMUnavailable:
+        if not GROQ_API_KEY:
+            raise
+        log.warning("Gemini indisponible, bascule vers Groq (%s)", GROQ_MODEL)
+        return groq_complete(
+            [{"role": "system", "content": system}, {"role": "user", "content": prompt}], temperature=0.4
+        )
+    text = (response.text or "").strip()
+    if not text:
+        raise LLMUnavailable("réponse vide")
+    usage = response.usage_metadata
+    return text, (usage.total_token_count if usage and usage.total_token_count else 0)
 
 
 # --- Conversation ------------------------------------------------------------

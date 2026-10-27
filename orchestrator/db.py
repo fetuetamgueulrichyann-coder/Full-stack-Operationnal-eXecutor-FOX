@@ -641,7 +641,7 @@ def claim_due_briefings(local_date, local_time, limit=20):
 # --- Journal des actions -------------------------------------------------------
 JOURNAL_AUDIT_EVENTS = (
     "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",
-    "memory_cleared", "chat_deleted", "history_deleted",
+    "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
 )
 
 
