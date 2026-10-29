@@ -643,6 +643,7 @@ JOURNAL_AUDIT_EVENTS = (
     "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",
     "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
     "client_created", "client_updated", "client_deleted", "quote_created", "quote_status", "quote_deleted",
+    "quote_pdf", "business_updated",
 )
 
 
@@ -1039,3 +1040,30 @@ def delete_quote(user_id, ref):
     with cursor() as cur:
         cur.execute("DELETE FROM quotes WHERE id = %s AND user_id = %s", (quote["id"], user_id))
     return quote
+
+
+# --- Profil d'entreprise (phase C3) ---------------------------------------------
+def get_business(user_id):
+    with cursor() as cur:
+        cur.execute("SELECT name, phone, email, address, tax_id FROM business_profiles WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"name": row[0], "phone": row[1], "email": row[2], "address": row[3], "tax_id": row[4]}
+
+
+def set_business(user_id, name, phone=None, email=None, address=None, tax_id=None):
+    with cursor() as cur:
+        cur.execute(
+            "INSERT INTO business_profiles (user_id, name, phone, email, address, tax_id) VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (user_id) DO UPDATE SET name = EXCLUDED.name, phone = EXCLUDED.phone, email = EXCLUDED.email, "
+            "address = EXCLUDED.address, tax_id = EXCLUDED.tax_id, updated_at = now()",
+            (user_id, name, phone, email, address, tax_id),
+        )
+    return get_business(user_id)
+
+
+def delete_business(user_id):
+    with cursor() as cur:
+        cur.execute("DELETE FROM business_profiles WHERE user_id = %s", (user_id,))
+        return cur.rowcount > 0

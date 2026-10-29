@@ -29,6 +29,8 @@ EVENT_LABELS = {
     "quote_created": "Devis créé",
     "quote_status": "Statut de devis modifié",
     "quote_deleted": "Devis supprimé",
+    "quote_pdf": "Devis exporté en PDF",
+    "business_updated": "Profil d'entreprise modifié",
 }
 
 

@@ -5,7 +5,7 @@ import time
 import uuid
 from datetime import datetime
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from google.genai import errors
 
 import accounts
@@ -17,6 +17,7 @@ import journal
 import mail
 import memory
 import commercial
+import quote_pdf
 import tasks
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -655,6 +656,66 @@ def quotes_delete(ref):
     if quote is None:
         return jsonify(error="devis introuvable"), 404
     db.audit(user["id"], "quote_deleted", None, {"quote_id": quote["id"]})
+    return jsonify(status="deleted")
+
+
+@app.get("/quotes/<ref>/pdf")
+def quotes_pdf(ref):
+    user, error = chat_auth()
+    if error:
+        return error
+    quote = db.get_quote(user["id"], ref)
+    if quote is None:
+        return jsonify(error="devis introuvable"), 404
+    client = db.get_client(user["id"], quote["client_id"]) if quote["client_id"] else None
+    pdf = quote_pdf.render(commercial.public_quote(quote), db.get_business(user["id"]), client)
+    db.audit(user["id"], "quote_pdf", None, {"quote_id": quote["id"]})
+    return Response(pdf, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{quote["number"]}.pdf"', "X-Quote-Number": quote["number"]})
+
+
+@app.get("/quotes/<ref>/mail")
+def quotes_mail(ref):
+    user, error = chat_auth()
+    if error:
+        return error
+    quote = db.get_quote(user["id"], ref)
+    if quote is None:
+        return jsonify(error="devis introuvable"), 404
+    client = db.get_client(user["id"], quote["client_id"]) if quote["client_id"] else None
+    return jsonify(commercial.quote_mail(commercial.public_quote(quote), client, db.get_business(user["id"])))
+
+
+@app.get("/business")
+def business_get():
+    user, error = chat_auth()
+    if error:
+        return error
+    business = db.get_business(user["id"])
+    return jsonify(business=commercial.public_business(business) if business else None)
+
+
+@app.put("/business")
+def business_set():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        business = db.set_business(user["id"], **commercial.parse_business(body().get("text")))
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    db.audit(user["id"], "business_updated", None, {})
+    return jsonify(business=commercial.public_business(business))
+
+
+@app.delete("/business")
+def business_delete():
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.delete_business(user["id"]):
+        return jsonify(error="Aucun profil d'entreprise."), 404
+    db.audit(user["id"], "business_updated", None, {})
     return jsonify(status="deleted")
 
 

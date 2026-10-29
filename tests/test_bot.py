@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,7 +365,7 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
     for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
@@ -552,7 +552,7 @@ def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
 
 
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis"} <= {c.command for c in bot.COMMANDS}
+    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise"} <= {c.command for c in bot.COMMANDS}
     for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal", "/briefing"):
         assert command in bot.HELP
 
@@ -1256,7 +1256,10 @@ def test_devis_creation_multi_lignes_et_client_sans_fiche(server, context):
     assert server.calls == [("POST", "/quotes", 900, {"text": "Paul Martin\nPeinture | 2 | 15000"})]
     text, markup = msg.replies[0]
     assert "Devis DV-2026-003" in text and "Total : 35 775 XAF" in text and "Paiement à 30 jours" in text
-    assert buttons(markup) == [[("Envoyé", "qs:DV-2026-003:e"), ("Accepté", "qs:DV-2026-003:a"), ("Refusé", "qs:DV-2026-003:r")]]
+    assert buttons(markup) == [
+        [("Envoyé", "qs:DV-2026-003:e"), ("Accepté", "qs:DV-2026-003:a"), ("Refusé", "qs:DV-2026-003:r")],
+        [("PDF", "qp:DV-2026-003"), ("E-mail", "qm:DV-2026-003")],
+    ]
     assert "n'a pas de fiche client" in msg.replies[1][0]
 
 
@@ -1289,6 +1292,7 @@ def test_devis_changement_de_statut(server, context):
     assert server.calls == [("PATCH", "/quotes/DV-2026-003", 900, {"status": "accepté"})]
     text, markup = msg.replies[0]
     assert "(accepté)" in text and [b[0] for b in buttons(markup)[0]] == ["Envoyé", "Refusé"]
+    assert [b[0] for b in buttons(markup)[1]] == ["PDF", "E-mail"]
 
 
 def test_devis_suppression(server, context):
@@ -1369,3 +1373,129 @@ def test_boutons_sans_le_statut_actuel():
 
 def test_fiche_client_sans_details():
     assert "Pas d'autres informations" in botlogic.client_message({"name": "Paul"})
+
+
+# --- PDF, e-mail et profil d'entreprise (C3) -------------------------------------------
+class PdfResponse(Response):
+    def __init__(self, content=b"%PDF-1.4 test", number="DV-2026-003"):
+        super().__init__(200)
+        self.content = content
+        self.headers = {"X-Quote-Number": number}
+
+
+def with_documents(msg):
+    msg.documents = []
+
+    async def reply_document(document, filename=None):
+        msg.documents.append((document.read(), filename))
+
+    msg.reply_document = reply_document
+    return msg
+
+
+def test_devis_pdf_envoye_comme_document(server, context):
+    server.routes[("GET", "/quotes/3/pdf")] = PdfResponse()
+    upd, msg = update("/devis 3 pdf")
+    with_documents(msg)
+    run(bot.quote_cmd(upd, context))
+    assert msg.documents == [(b"%PDF-1.4 test", "DV-2026-003.pdf")] and msg.replies == []
+
+
+def test_devis_pdf_introuvable(server, context):
+    server.routes[("GET", "/quotes/9/pdf")] = Response(404, {"error": "devis introuvable"})
+    upd, msg = update("/devis 9 pdf")
+    with_documents(msg)
+    run(bot.quote_cmd(upd, context))
+    assert msg.replies == [("devis introuvable", None)] and msg.documents == []
+
+
+def test_devis_mail_brouillon_avec_lien_gmail(server, context):
+    server.routes[("GET", "/quotes/3/mail")] = Response(200, {"to": "p@x.fr", "subject": "Devis DV-2026-003", "body": "Bonjour Paul"})
+    upd, msg = update("/devis 3 mail")
+    run(bot.quote_cmd(upd, context))
+    text, markup = msg.replies[0]
+    assert "Devis DV-2026-003" in text and "p@x.fr" in text
+    assert markup.inline_keyboard[0][0].url.startswith("https://mail.google.com/mail/?view=cm") and "to=p%40x.fr" in markup.inline_keyboard[0][0].url
+    assert "joindre le PDF" in msg.replies[1][0] and "adresse e-mail" not in msg.replies[1][0]
+
+
+def test_devis_mail_client_sans_adresse(server, context):
+    server.routes[("GET", "/quotes/3/mail")] = Response(200, {"to": "", "subject": "S", "body": "B"})
+    upd, msg = update("/devis 3 mail")
+    run(bot.quote_cmd(upd, context))
+    assert "pas d'adresse e-mail" in msg.replies[1][0]
+
+
+def press(server, context, data):
+    query = Query(data, 900)
+    query.message = with_documents(Message("devis"))
+    run(bot.on_quote_extra_button(SimpleNamespace(callback_query=query), context))
+    return query
+
+
+def test_bouton_pdf(server, context):
+    server.routes[("GET", "/quotes/DV-2026-003/pdf")] = PdfResponse()
+    query = press(server, context, "qp:DV-2026-003")
+    assert query.answered and query.message.documents == [(b"%PDF-1.4 test", "DV-2026-003.pdf")]
+
+
+def test_bouton_email(server, context):
+    server.routes[("GET", "/quotes/DV-2026-003/mail")] = Response(200, {"to": "p@x.fr", "subject": "S", "body": "B"})
+    query = press(server, context, "qm:DV-2026-003")
+    assert server.calls == [("GET", "/quotes/DV-2026-003/mail", 900, None)] and "p@x.fr" in query.message.replies[0][0]
+
+
+def test_bouton_compte_inconnu(server, context):
+    context.application.bot_data["unknown"].mark(900)
+    query = press(server, context, "qp:DV-2026-003")
+    assert query.message.replies == [(bot.NO_ACCOUNT, None)] and server.calls == []
+
+
+def test_entreprise_voir_vide_affiche_l_aide(server, context):
+    server.routes[("GET", "/business")] = Response(200, {"business": None})
+    upd, msg = update("/entreprise")
+    run(bot.business_cmd(upd, context))
+    assert "Ton entreprise" in msg.replies[0][0]
+
+
+def test_entreprise_voir(server, context):
+    server.routes[("GET", "/business")] = Response(200, {"business": {"name": "Atelier Fox", "phone": "699", "email": None, "address": "Douala", "tax_id": "M12"}})
+    upd, msg = update("/entreprise")
+    run(bot.business_cmd(upd, context))
+    assert "Atelier Fox" in msg.replies[0][0] and "M12" in msg.replies[0][0] and "Douala" in msg.replies[0][0]
+
+
+def test_entreprise_enregistrer(server, context):
+    server.routes[("PUT", "/business")] = Response(200, {"business": {"name": "Atelier Fox", "phone": None, "email": None, "address": None, "tax_id": None}})
+    upd, msg = update("/entreprise Atelier Fox")
+    run(bot.business_cmd(upd, context))
+    assert server.calls == [("PUT", "/business", 900, {"text": "Atelier Fox"})] and "Profil enregistré" in msg.replies[0][0]
+
+
+def test_entreprise_refus(server, context):
+    server.routes[("PUT", "/business")] = Response(400, {"error": "Adresse e-mail non reconnue."})
+    upd, msg = update("/entreprise A ; ; zz")
+    run(bot.business_cmd(upd, context))
+    assert msg.replies == [("Adresse e-mail non reconnue.", None)]
+
+
+@pytest.mark.parametrize("status, expected", [(200, "Profil supprimé."), (404, "Aucun profil d'entreprise.")])
+def test_entreprise_suppression(server, context, status, expected):
+    server.routes[("DELETE", "/business")] = Response(status, {"error": "Aucun profil d'entreprise."})
+    upd, msg = update("/entreprise efface")
+    run(bot.business_cmd(upd, context))
+    assert msg.replies == [(expected, None)]
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("/entreprise", ("show",)), ("/entreprise efface", ("delete",)), ("/entreprise supprime", ("delete",)),
+    ("/entreprise Atelier ; 699", ("set", "Atelier ; 699")),
+])
+def test_business_command(raw, expected):
+    assert botlogic.business_command(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [("/devis 3 pdf", ("pdf", "3")), ("/devis 3 mail", ("mail", "3")),
+                                          ("/devis 3 e-mail", ("mail", "3")), ("/devis DV-2026-003 PDF", ("pdf", "DV-2026-003"))])
+def test_quote_command_pdf_mail(raw, expected):
+    assert botlogic.quote_command(raw) == expected

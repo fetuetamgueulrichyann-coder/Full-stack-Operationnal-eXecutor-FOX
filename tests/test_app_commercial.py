@@ -279,3 +279,82 @@ def test_le_journal_ne_garde_que_le_fait(client, db, alice):
     with db.cursor() as cur:
         cur.execute("SELECT details::text FROM audit_log WHERE event LIKE 'client_%' OR event LIKE 'quote_%'")
         assert not any(w in " ".join(r[0] for r in cur.fetchall()) for w in ("confidentiel", "Secret", "699"))
+
+
+# --- PDF, e-mail et profil d'entreprise (C3) -----------------------------------------------------
+@pytest.mark.parametrize("method, path", [("GET", "/quotes/1/pdf"), ("GET", "/quotes/1/mail"), ("GET", "/business"),
+                                          ("PUT", "/business"), ("DELETE", "/business")])
+def test_routes_c3_exigent_une_identite(client, method, path):
+    assert call(client, method, path, telegram_id=999).status_code == 403
+
+
+def test_pdf_du_devis(client, db, alice):
+    number = call(client, "POST", "/quotes", text=QUOTE).get_json()["quote"]["number"]
+    response = call(client, "GET", f"/quotes/{number}/pdf")
+    assert response.status_code == 200 and response.mimetype == "application/pdf" and response.data.startswith(b"%PDF-")
+    assert number in response.headers["Content-Disposition"] and response.headers["X-Quote-Number"] == number
+    assert call(client, "GET", "/quotes/1/pdf").status_code == 200
+    assert call(client, "GET", "/quotes/DV-2026-999/pdf").status_code == 404
+
+
+def test_pdf_utilise_le_profil_et_la_fiche_client(client, monkeypatch, app_module):
+    seen = {}
+    monkeypatch.setattr(app_module.quote_pdf, "render", lambda quote, business, client: seen.update(quote=quote, business=business, client=client) or b"%PDF-x")
+    call(client, "POST", "/clients", text="Paul Martin ; 699123456")
+    call(client, "PUT", "/business", text="Atelier Fox ; ; ; Douala")
+    number = call(client, "POST", "/quotes", text=QUOTE).get_json()["quote"]["number"]
+    call(client, "GET", f"/quotes/{number}/pdf")
+    assert seen["business"]["name"] == "Atelier Fox" and seen["client"]["phone"] == "699123456" and seen["quote"]["total"].endswith("XAF")
+
+
+def test_pdf_chacun_le_sien(client, friend):
+    number = call(client, "POST", "/quotes", text=QUOTE).get_json()["quote"]["number"]
+    assert call(client, "GET", f"/quotes/{number}/pdf", telegram_id=OTHER).status_code == 404
+    assert call(client, "GET", f"/quotes/{number}/mail", telegram_id=OTHER).status_code == 404
+
+
+def test_mail_du_devis(client):
+    call(client, "POST", "/clients", text="Paul Martin ; ; paul@x.fr")
+    call(client, "PUT", "/business", text="Atelier Fox")
+    number = call(client, "POST", "/quotes", text=QUOTE).get_json()["quote"]["number"]
+    mail = call(client, "GET", f"/quotes/{number}/mail").get_json()
+    assert mail["to"] == "paul@x.fr" and mail["subject"] == f"Devis {number}"
+    assert "125 213 XAF" in mail["body"] and mail["body"].endswith("Atelier Fox")
+    assert call(client, "GET", "/quotes/DV-2026-999/mail").status_code == 404
+
+
+def test_profil_d_entreprise(client):
+    assert call(client, "GET", "/business").get_json() == {"business": None}
+    response = call(client, "PUT", "/business", text="Atelier Fox ; 699 123 456 ; a@b.fr ; Douala ; M0123")
+    expected = {"name": "Atelier Fox", "phone": "699 123 456", "email": "a@b.fr", "address": "Douala", "tax_id": "M0123"}
+    assert response.get_json()["business"] == expected and call(client, "GET", "/business").get_json()["business"] == expected
+    # un nouvel enregistrement remplace tout, il ne fusionne pas
+    assert call(client, "PUT", "/business", text="Nouveau").get_json()["business"] == {
+        "name": "Nouveau", "phone": None, "email": None, "address": None, "tax_id": None}
+    assert call(client, "PUT", "/business", text=" ; 1").status_code == 400
+    assert call(client, "PUT", "/business").status_code == 400
+    assert call(client, "DELETE", "/business").status_code == 200
+    assert call(client, "DELETE", "/business").status_code == 404
+    assert call(client, "GET", "/business").get_json() == {"business": None}
+
+
+def test_profil_isole_par_utilisateur(client, friend):
+    call(client, "PUT", "/business", text="Chez Alice")
+    assert call(client, "GET", "/business", telegram_id=OTHER).get_json() == {"business": None}
+    call(client, "PUT", "/business", telegram_id=OTHER, text="Chez l'ami")
+    assert call(client, "GET", "/business").get_json()["business"]["name"] == "Chez Alice"
+    assert call(client, "DELETE", "/business", telegram_id=OTHER).status_code == 200
+    assert call(client, "GET", "/business").get_json()["business"]["name"] == "Chez Alice"
+
+
+def test_journal_c3(client, db, alice):
+    import journal
+
+    number = call(client, "POST", "/quotes", text=QUOTE).get_json()["quote"]["number"]
+    call(client, "GET", f"/quotes/{number}/pdf")
+    call(client, "PUT", "/business", text="Entreprise très secrète ; 699123456")
+    texts = {e["text"] for e in journal.entries(alice, 20)}
+    assert {"Devis exporté en PDF", "Profil d'entreprise modifié"} <= texts
+    with db.cursor() as cur:
+        cur.execute("SELECT details::text FROM audit_log WHERE event IN ('business_updated', 'quote_pdf')")
+        assert not any("secrète" in r[0] or "699123456" in r[0] for r in cur.fetchall())

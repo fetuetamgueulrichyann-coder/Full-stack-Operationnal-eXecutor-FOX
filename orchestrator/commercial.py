@@ -253,3 +253,34 @@ def public_quote_summary(quote):
         "total": money(totals(quote["lines"], quote["vat_rate"], currency)["total"], currency),
         "created_at": quote["created_at"].isoformat(timespec="minutes") if quote.get("created_at") else None,
     }
+
+
+# --- Profil d'entreprise (en-tête des devis) -----------------------------------------------
+BUSINESS_FIELDS = (("phone", "Le téléphone"), ("email", "L'e-mail"), ("address", "L'adresse"), ("tax_id", "Le numéro de contribuable"))
+
+
+def parse_business(text):
+    """« Nom ; téléphone ; e-mail ; adresse ; n° contribuable » (tout sauf le nom est facultatif)."""
+    parts = [p.strip() for p in str(text or "").split(";")]
+    if len(parts) > 5:
+        raise CommercialInputError("Format : Nom ; téléphone ; e-mail ; adresse ; n° contribuable")
+    result = {"name": clean_name(parts[0])}
+    for (key, label), value in zip(BUSINESS_FIELDS, parts[1:]):
+        result[key] = clean_optional(value, label)
+    return result
+
+
+def public_business(business):
+    return {k: business.get(k) for k in ("name", "phone", "email", "address", "tax_id")}
+
+
+def quote_mail(quote, client=None, business=None):
+    """Brouillon d'e-mail pour envoyer un devis (modèle fixe, sans IA). Le PDF est à joindre à la main."""
+    name = (business or {}).get("name")
+    body = (
+        f"Bonjour {quote['client']},\n\n"
+        f"Veuillez trouver ci-joint notre devis n° {quote['number']} d'un montant de {quote['total']} TTC.\n\n"
+        "Je reste à votre disposition pour toute question.\n\n"
+        "Cordialement" + (f",\n{name}" if name else ",")
+    )
+    return {"to": (client or {}).get("email") or "", "subject": f"Devis {quote['number']}", "body": body}

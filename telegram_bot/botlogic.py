@@ -370,6 +370,8 @@ QUOTE_HELP = (
     "/devis 3 : afficher le devis n° 3 de l'année (ou /devis DV-2026-003)\n"
     "/devis 3 accepté : changer le statut (brouillon, envoyé, accepté, refusé)\n"
     "/devis 3 supprime : supprimer un brouillon ou un devis refusé\n"
+    "/devis 3 pdf : recevoir le devis en PDF ; /devis 3 mail : brouillon d'e-mail au client (le PDF est à joindre)\n"
+    "/entreprise : ton en-tête de devis (nom ; téléphone ; e-mail ; adresse ; n° contribuable)\n"
     "Créer un devis (une ligne par prestation, sur plusieurs lignes) :\n"
     "/devis Paul Martin\n"
     "Peinture salon | 2 | 15000\n"
@@ -418,6 +420,8 @@ def quote_command(raw):
     if len(words) == 1:
         return ("show", words[0])
     word = " ".join(words[1:]).lower()
+    if word in ("pdf", "mail", "email", "e-mail"):
+        return ("pdf" if word == "pdf" else "mail", words[0])
     if word in DELETE_WORDS:
         return ("delete", words[0])
     return ("status", words[0], word)
@@ -479,7 +483,36 @@ def quote_buttons(quote):
     codes = {"envoye": "e", "accepte": "a", "refuse": "r"}
     labels = {"e": "Envoyé", "a": "Accepté", "r": "Refusé"}
     row = [(labels[c], f"qs:{quote['number']}:{c}") for st, c in codes.items() if st != quote["status"]]
-    return [row]
+    return [row, [("PDF", f"qp:{quote['number']}"), ("E-mail", f"qm:{quote['number']}")]]
+
+
+BUSINESS_HELP = (
+    "Ton entreprise (en-tête de tes devis PDF) :\n"
+    "/entreprise : voir le profil\n"
+    "/entreprise Nom ; téléphone ; e-mail ; adresse ; n° contribuable : l'enregistrer (tout sauf le nom est facultatif)\n"
+    "/entreprise efface : le supprimer"
+)
+
+
+def business_command(raw):
+    """Texte de /entreprise -> ("show",) | ("set", texte) | ("delete",)."""
+    rest = command_rest(raw)
+    if not rest:
+        return ("show",)
+    if rest.lower() in DELETE_WORDS:
+        return ("delete",)
+    return ("set", rest)
+
+
+def business_message(business):
+    if not business:
+        return BUSINESS_HELP
+    lines = [f"**{business['name']}**"]
+    for label, key in (("Téléphone", "phone"), ("E-mail", "email"), ("Adresse", "address"), ("N° contribuable", "tax_id")):
+        if business.get(key):
+            lines.append(f"{label} : {business[key]}")
+    lines.append("Cet en-tête apparaît sur tes devis PDF. /entreprise efface pour le retirer.")
+    return "\n".join(lines)
 
 
 def briefing_command(args):

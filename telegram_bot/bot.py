@@ -1,6 +1,8 @@
 import asyncio
+import io
 import logging
 import os
+from types import SimpleNamespace
 
 import httpx
 from telegram import (
@@ -25,11 +27,14 @@ from botlogic import (
     action_message,
     briefing_command,
     briefing_status,
+    business_command,
+    business_message,
     client_command,
     client_message,
     clients_choice,
     clients_message,
     history_buttons,
+    BUSINESS_HELP,
     CLIENT_HELP,
     MAIL_HELP,
     QUOTE_HELP,
@@ -81,6 +86,7 @@ HELP = (
     "/mail : rédiger, améliorer ou résumer un e-mail (rien n'est envoyé)\n"
     "/clients : tes clients ; /client Nom pour une fiche, /client ajoute pour en créer\n"
     "/devis : tes devis ; /devis Client + lignes pour en créer (détails avec /devis aide)\n"
+    "/entreprise : ton en-tête de devis (nom, contact, n° contribuable)\n"
     "/annuler : annuler la dernière action effectuée"
 )
 COMMANDS = [
@@ -98,6 +104,7 @@ COMMANDS = [
     BotCommand("clients", "Mes clients"),
     BotCommand("client", "Fiche, ajout ou suppression d'un client"),
     BotCommand("devis", "Mes devis, créer un devis"),
+    BotCommand("entreprise", "En-tête de mes devis"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
 ]
@@ -653,6 +660,9 @@ async def quote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if response is not None:
             await send_markdown(message, quotes_message(response.json()["quotes"]))
         return
+    if kind in ("pdf", "mail"):
+        await quote_extra(update, context, kind, rest[0])
+        return
     if kind == "create":
         response = await commercial_call(update, context, "POST", "/quotes", {"text": rest[0]})
     elif kind == "show":
@@ -676,6 +686,57 @@ async def quote_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"« {data['quote']['client']} » n'a pas de fiche client. "
             f"Tu peux l'ajouter avec /client ajoute {data['quote']['client']} ; téléphone ; e-mail ; adresse."
         )
+
+
+async def quote_extra(update, context, kind, ref):
+    """PDF du devis (envoyé comme document) ou brouillon d'e-mail au client avec lien Gmail."""
+    message = update.effective_message
+    response = await commercial_call(update, context, "GET", f"/quotes/{ref}/{kind}")
+    if response is None:
+        return
+    if response.status_code >= 400:
+        await message.reply_text(refusal(response, "Demande refusée."))
+        return
+    if kind == "pdf":
+        number = getattr(response, "headers", {}).get("X-Quote-Number") or ref
+        await message.reply_document(document=io.BytesIO(response.content), filename=f"{number}.pdf")
+        return
+    draft = response.json()
+    url, truncated = gmail_url(draft)
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("Ouvrir dans Gmail", url=url)]])
+    await send_markdown(message, draft_message(draft), markup)
+    await message.reply_text("Pense à joindre le PDF : /devis " + ref + " pdf" + ("" if draft.get("to") else ". Le client n'a pas d'adresse e-mail : ajoute-la dans Gmail."))
+
+
+async def on_quote_extra_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Boutons PDF / E-mail sous un devis."""
+    query = update.callback_query
+    await query.answer()
+    action, _, number = (query.data or "").partition(":")
+    proxy = SimpleNamespace(effective_message=query.message, effective_user=query.from_user)
+    await quote_extra(proxy, context, "pdf" if action == "qp" else "mail", number)
+
+
+async def business_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    kind, *rest = business_command(message.text)
+    if kind == "show":
+        response = await commercial_call(update, context, "GET", "/business")
+        if response is not None:
+            await send_markdown(message, business_message(response.json()["business"]))
+    elif kind == "set":
+        response = await commercial_call(update, context, "PUT", "/business", {"text": rest[0]})
+        if response is None:
+            return
+        if response.status_code >= 400:
+            await message.reply_text(refusal(response, "Demande refusée."))
+            return
+        await send_markdown(message, "Profil enregistré.\n\n" + business_message(response.json()["business"]))
+    else:
+        response = await commercial_call(update, context, "DELETE", "/business")
+        if response is None:
+            return
+        await message.reply_text("Profil supprimé." if response.status_code < 400 else refusal(response, "Aucun profil d'entreprise."))
 
 
 async def on_quote_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -970,6 +1031,7 @@ def main() -> None:
         ("clients", clients_command),
         ("client", client_cmd),
         ("devis", quote_cmd),
+        ("entreprise", business_cmd),
         ("annuler", undo_command),
     ):
         application.add_handler(CommandHandler(name, handler, filters=private))
@@ -977,6 +1039,7 @@ def main() -> None:
         CallbackQueryHandler(on_decision, pattern=r"^(ok|no):[0-9a-fA-F-]{36}$")
     )
     application.add_handler(CallbackQueryHandler(on_memory_button, pattern=r"^(mdel:[0-9]{1,18}|mall|mall_ok)$"))
+    application.add_handler(CallbackQueryHandler(on_quote_extra_button, pattern=r"^q[pm]:DV-[0-9]{4}-[0-9]{3,6}$"))
     application.add_handler(CallbackQueryHandler(on_quote_button, pattern=r"^qs:DV-[0-9]{4}-[0-9]{3,6}:[ear]$"))
     application.add_handler(CallbackQueryHandler(on_task_button, pattern=r"^(tdone|tcancel):[0-9]{1,18}$"))
     application.add_handler(

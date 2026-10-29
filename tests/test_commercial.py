@@ -189,3 +189,32 @@ def test_devis_public():
         "30 000 XAF", "5 775 XAF", "35 775 XAF", "19,25")
     assert public["amounts"] == {"subtotal": "30000", "vat": "5775", "total": "35775"}
     assert c.public_quote_summary(quote)["total"] == "35 775 XAF"
+
+
+# --- Profil d'entreprise et e-mail du devis (C3) --------------------------------------------
+def test_profil_d_entreprise():
+    assert c.parse_business("Atelier Fox ; 699123456 ; a@b.fr ; Douala ; M0123") == {
+        "name": "Atelier Fox", "phone": "699123456", "email": "a@b.fr", "address": "Douala", "tax_id": "M0123"}
+    assert c.parse_business("Atelier Fox") == {"name": "Atelier Fox"}
+
+
+@pytest.mark.parametrize("text, message", [("", "vide"), ("A ; 1", "téléphone"), ("A ; ; zz", "e-mail"),
+                                           ("A;;;;" + "x" * 201, "trop long"), ("a;b;c;d;e;f", "Format")])
+def test_profil_invalide(text, message):
+    with pytest.raises(c.CommercialInputError, match=message):
+        c.parse_business(text)
+
+
+QUOTE_PUBLIC = {"client": "Paul", "number": "DV-2026-001", "total": "35\u202f775 XAF"}
+
+
+def test_mail_du_devis():
+    mail = c.quote_mail(QUOTE_PUBLIC, {"email": "p@x.fr"}, {"name": "Atelier Fox"})
+    assert mail["to"] == "p@x.fr" and mail["subject"] == "Devis DV-2026-001"
+    assert mail["body"].startswith("Bonjour Paul,") and "35\u202f775 XAF TTC" in mail["body"] and mail["body"].endswith("Cordialement,\nAtelier Fox")
+
+
+def test_mail_du_devis_sans_client_ni_entreprise():
+    mail = c.quote_mail(QUOTE_PUBLIC)
+    assert mail["to"] == "" and mail["body"].endswith("Cordialement,")
+    assert c.quote_mail(QUOTE_PUBLIC, {"email": None})["to"] == ""

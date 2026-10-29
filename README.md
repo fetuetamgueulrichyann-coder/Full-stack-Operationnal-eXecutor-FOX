@@ -224,7 +224,10 @@ Chaque utilisateur gère **ses propres** clients et devis (isolés des autres co
 - **Journal** : le fait seulement (« Devis créé »…), jamais les noms ni les montants.
 - **Limites** : `MAX_CLIENTS` (200), `MAX_QUOTES` (500), 30 lignes par devis.
 - **API** : `/clients` (GET, POST), `/clients/find?q=`, `/clients/<id>` (GET, PATCH, DELETE), `/quotes` (GET, POST), `/quotes/<n°>` (GET, PATCH `{"status"}`, DELETE). Les montants sont renvoyés formatés et en valeurs brutes (`amounts`).
-- Migration : `011_clients_devis.sql` (additive). Le PDF et l'envoi par e-mail d'un devis viendront ensuite.
+- **PDF** (C3) : `/devis 3 pdf` (ou le bouton PDF sous le devis) envoie le devis en PDF dans Telegram, avec l'en-tête de ton entreprise et les coordonnées du client. Police standard : les caractères hors alphabet latin ne s'affichent pas. Bibliothèque `reportlab` (installée à la reconstruction de l'image).
+- **E-mail au client** (C3) : `/devis 3 mail` (ou le bouton E-mail) prépare un brouillon à partir d'un modèle fixe (sans IA, aucun quota), avec le bouton « Ouvrir dans Gmail » ; le PDF est à joindre toi-même. Rien n'est envoyé par FOX.
+- **Profil d'entreprise** (C3) : `/entreprise Nom ; téléphone ; e-mail ; adresse ; n° contribuable` (tout sauf le nom est facultatif ; un nouvel enregistrement remplace le précédent), `/entreprise` pour le voir, `/entreprise efface` pour le retirer. API : `GET/PUT/DELETE /business`, `GET /quotes/<n°>/pdf`, `GET /quotes/<n°>/mail`.
+- Migrations : `011_clients_devis.sql` et `012_entreprise.sql` (additives).
 
 ## Tests
 
