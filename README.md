@@ -229,6 +229,17 @@ Chaque utilisateur gère **ses propres** clients et devis (isolés des autres co
 - **Profil d'entreprise** (C3) : `/entreprise Nom ; téléphone ; e-mail ; adresse ; n° contribuable` (tout sauf le nom est facultatif ; un nouvel enregistrement remplace le précédent), `/entreprise` pour le voir, `/entreprise efface` pour le retirer. API : `GET/PUT/DELETE /business`, `GET /quotes/<n°>/pdf`, `GET /quotes/<n°>/mail`.
 - Migrations : `011_clients_devis.sql` et `012_entreprise.sql` (additives).
 
+## Agenda interne (phase B5)
+
+Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste réservé au propriétaire).
+
+- `/rdv Titre | quand | durée | lieu` ajoute un rendez-vous. « Quand » accepte `demain 14h`, `lundi 9h30`, `27/11 à 9h30`, `2026-12-01 09:00` ; la durée (`1h30`, `45 min`) vaut 1 h par défaut ; le lieu est facultatif. Les rendez-vous qui se chevauchent sont signalés (jamais refusés).
+- `/agenda` (ou `/agenda semaine`, `mois`, `aujourd'hui`, `demain`) liste les rendez-vous, avec un bouton « Supprimer n » suivi d'une confirmation.
+- Un rappel Telegram est envoyé `AGENDA_REMIND_MINUTES` (30) minutes avant ; changer l'heure d'un rendez-vous réarme son rappel.
+- Le briefing du matin fusionne les rendez-vous internes et Google.
+- Limites : `MAX_UPCOMING_EVENTS` (200 à venir), `EVENT_RETENTION_DAYS` (60 jours de conservation après la fin).
+- API : `GET/POST /events`, `GET/PATCH/DELETE /events/<id>`, `POST /events/reminders/claim` (jeton de service).
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

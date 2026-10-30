@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,7 +365,7 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
     for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
@@ -552,7 +552,7 @@ def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
 
 
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise"} <= {c.command for c in bot.COMMANDS}
+    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv"} <= {c.command for c in bot.COMMANDS}
     for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal", "/briefing"):
         assert command in bot.HELP
 
@@ -954,12 +954,16 @@ def test_la_boucle_envoie_rappels_et_briefings(monkeypatch):
         seen.append("briefings")
         raise asyncio.CancelledError
 
+    async def events(application):
+        seen.append("rdv")
+
+    monkeypatch.setattr(bot, "send_event_reminders", events)
     monkeypatch.setattr(bot, "send_reminders", reminders)
     monkeypatch.setattr(bot, "send_briefings", briefings)
     monkeypatch.setattr(bot, "REMINDER_POLL_SECONDS", 0)
     with pytest.raises(asyncio.CancelledError):
         run(asyncio.wait_for(bot.reminder_loop(SimpleNamespace()), timeout=3))  # sans envoi des briefings : TimeoutError
-    assert seen == ["rappels", "briefings"]
+    assert seen == ["rappels", "rdv", "briefings"]
 
 
 # --- /mail (B4) ---------------------------------------------------------------
@@ -1499,3 +1503,132 @@ def test_business_command(raw, expected):
                                           ("/devis 3 e-mail", ("mail", "3")), ("/devis DV-2026-003 PDF", ("pdf", "DV-2026-003"))])
 def test_quote_command_pdf_mail(raw, expected):
     assert botlogic.quote_command(raw) == expected
+
+
+# --- Agenda interne (B5) -----------------------------------------------------
+EVENT = {"id": 7, "title": "Réunion", "location": "Douala", "start": "2030-01-10T14:00", "end": "2030-01-10T15:30"}
+
+
+def test_rdv_sans_texte_affiche_l_aide(server, context):
+    upd, msg = update("/rdv")
+    run(bot.event_cmd(upd, context))
+    assert msg.replies[0][0] == botlogic.EVENT_HELP
+    assert server.calls == []
+
+
+def test_rdv_cree_le_rendez_vous(server, context):
+    server.routes[("POST", "/events")] = Response(201, {"event": EVENT, "conflicts": []})
+    upd, msg = update("/rdv Réunion | demain 14h | 1h30 | Douala")
+    run(bot.event_cmd(upd, context))
+    assert server.calls == [("POST", "/events", 900, {"text": "Réunion | demain 14h | 1h30 | Douala"})]
+    assert "Réunion" in msg.replies[0][0]
+
+
+def test_rdv_refus_metier_est_rendu(server, context):
+    server.routes[("POST", "/events")] = Response(400, {"error": "Ce moment est déjà passé."})
+    upd, msg = update("/rdv X | hier 10h")
+    run(bot.event_cmd(upd, context))
+    assert "déjà passé" in msg.replies[0][0]
+
+
+def test_agenda_transmet_la_periode_et_propose_la_suppression(server, context):
+    server.routes[("GET", "/events")] = Response(200, {"events": [EVENT]})
+    context.args = ["semaine"]
+    upd, msg = update("/agenda semaine")
+    run(bot.agenda_cmd(upd, context))
+    assert server.calls == [("GET", "/events", 900, {"range": "semaine"})]
+    assert ("Supprimer 1", "evdel:7") in buttons(msg.replies[0][1])[0]
+
+
+def test_agenda_vide_sans_boutons(server, context):
+    server.routes[("GET", "/events")] = Response(200, {"events": []})
+    upd, msg = update("/agenda")
+    run(bot.agenda_cmd(upd, context))
+    assert msg.replies[0][1] is None
+
+
+def test_bouton_supprimer_demande_confirmation_puis_supprime(server, context):
+    server.routes[("GET", "/events/7")] = Response(200, {"event": EVENT})
+    server.routes[("DELETE", "/events/7")] = Response(200, {"status": "deleted"})
+    query = Query("evdel:7", 900)
+    query.message = Message()
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    text, markup = query.message.replies[0]
+    assert "Réunion" in text and ("Oui, supprimer", "evok:7") in buttons(markup)[0]
+    assert not any(c[0] == "DELETE" for c in server.calls)
+    query = Query("evok:7", 900)
+    query.message = Message()
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    assert ("DELETE", "/events/7", 900, None) in server.calls
+    assert "supprimé" in query.edits[0][0]
+
+
+def test_bouton_non_ne_supprime_rien(server, context):
+    query = Query("evno", 900)
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    assert server.calls == [] and "rien" in query.edits[0][0]
+
+
+def test_bouton_rendez_vous_disparu(server, context):
+    server.routes[("GET", "/events/7")] = Response(404, {"error": "rendez-vous introuvable"})
+    query = Query("evdel:7", 900)
+    query.message = Message()
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    assert "n'existe plus" in query.message.replies[0][0]
+
+
+class EvHttp:
+    def __init__(self, response):
+        self.response, self.posts = response, []
+
+    async def post(self, url, json=None):
+        self.posts.append(url)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+class EvSender:
+    def __init__(self, fail_first=False):
+        self.sent, self.fail_first = [], fail_first
+
+    async def send_message(self, **kwargs):
+        if self.fail_first and not self.sent and not getattr(self, "tried", False):
+            self.tried = True
+            raise RuntimeError("boom")
+        self.sent.append(kwargs)
+
+
+def reminder_app(response, sender):
+    return SimpleNamespace(bot_data={"http": EvHttp(response)}, bot=sender)
+
+
+def test_rappels_de_rendez_vous_envoyes():
+    rem = {"telegram_id": 900, "id": 7, "title": "Réunion", "location": None,
+           "start": "2030-01-10T14:00+01:00", "end": "2030-01-10T15:00+01:00"}
+    sender = EvSender()
+    app = reminder_app(Response(200, {"reminders": [rem, dict(rem, id=8, telegram_id=901)]}), sender)
+    assert run(bot.send_event_reminders(app)) == 2
+    assert [m["chat_id"] for m in sender.sent] == [900, 901]
+    assert app.bot_data["http"].posts[0].endswith("/events/reminders/claim")
+
+
+def test_un_rappel_en_echec_ne_bloque_pas_les_suivants():
+    rem = {"telegram_id": 900, "id": 7, "title": "A", "location": None,
+           "start": "2030-01-10T14:00+01:00", "end": "2030-01-10T15:00+01:00"}
+    sender = EvSender(fail_first=True)
+    app = reminder_app(Response(200, {"reminders": [rem, dict(rem, id=8)]}), sender)
+    assert run(bot.send_event_reminders(app)) == 1
+
+
+def test_rappels_orchestrateur_indisponible():
+    app = reminder_app(bot.httpx.ConnectError("x"), EvSender())
+    assert run(bot.send_event_reminders(app)) == 0
+
+
+def test_botlogic_agenda_helpers():
+    assert botlogic.agenda_word(["Semaine"]) == "semaine" and botlogic.agenda_word([]) == ""
+    assert botlogic.day_label("2030-01-10", __import__("datetime").date(2030, 1, 9)).startswith("Demain")
+    assert botlogic.agenda_buttons([EVENT]) == [[("Supprimer 1", "evdel:7")]]
+    assert "maintenant" in botlogic.event_reminder_message(
+        dict(EVENT, start="2000-01-01T10:00"), __import__("datetime").datetime(2030, 1, 1, tzinfo=__import__("datetime").timezone.utc))

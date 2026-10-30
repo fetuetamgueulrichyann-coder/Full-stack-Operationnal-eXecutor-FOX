@@ -26,6 +26,9 @@ from botlogic import (
     UnknownUsers,
     action_message,
     briefing_command,
+    agenda_buttons,
+    agenda_message,
+    agenda_word,
     briefing_status,
     business_command,
     business_message,
@@ -33,9 +36,13 @@ from botlogic import (
     client_message,
     clients_choice,
     clients_message,
+    command_rest,
+    event_created_message,
+    event_reminder_message,
     history_buttons,
     BUSINESS_HELP,
     CLIENT_HELP,
+    EVENT_HELP,
     MAIL_HELP,
     QUOTE_HELP,
     QUOTE_STATUS_CODES,
@@ -84,6 +91,7 @@ HELP = (
     "/journal : voir ce que FOX a proposé et fait\n"
     "/briefing : briefing du matin (on, off, une heure comme 07:30, ou maintenant)\n"
     "/mail : rédiger, améliorer ou résumer un e-mail (rien n'est envoyé)\n"
+    "/agenda : tes rendez-vous ; /rdv Titre | demain 14h | 1h | lieu pour en ajouter (tu es prévenu avant)\n"
     "/clients : tes clients ; /client Nom pour une fiche, /client ajoute pour en créer\n"
     "/devis : tes devis ; /devis Client + lignes pour en créer (détails avec /devis aide)\n"
     "/entreprise : ton en-tête de devis (nom, contact, n° contribuable)\n"
@@ -104,6 +112,8 @@ COMMANDS = [
     BotCommand("clients", "Mes clients"),
     BotCommand("client", "Fiche, ajout ou suppression d'un client"),
     BotCommand("devis", "Mes devis, créer un devis"),
+    BotCommand("agenda", "Mon agenda"),
+    BotCommand("rdv", "Ajouter un rendez-vous"),
     BotCommand("entreprise", "En-tête de mes devis"),
     BotCommand("annuler", "Annuler la dernière action"),
     BotCommand("aide", "Aide"),
@@ -766,6 +776,71 @@ async def on_quote_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await show_quote(query.message, quote)
 
 
+async def agenda_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    word = agenda_word(context.args)
+    response = await commercial_call(update, context, "GET", "/events", {"range": word})
+    if response is None:
+        return
+    if response.status_code >= 400:
+        await message.reply_text(refusal(response, "Demande refusée."))
+        return
+    data = response.json()
+    rows = agenda_buttons(data["events"])
+    await send_markdown(message, agenda_message(data, word), keyboard(rows) if rows else None)
+
+
+async def event_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    text = command_rest(message.text)
+    if not text:
+        await message.reply_text(EVENT_HELP)
+        return
+    response = await commercial_call(update, context, "POST", "/events", {"text": text})
+    if response is None:
+        return
+    if response.status_code >= 400:
+        await message.reply_text(refusal(response, "Demande refusée."))
+        return
+    await message.reply_text(event_created_message(response.json()))
+
+
+async def on_event_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Suppression d'un rendez-vous : bouton « Supprimer n », puis confirmation (Oui / Non)."""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    action, _, value = (query.data or "").partition(":")
+    if action == "evno":
+        await query.edit_message_text("D'accord, rien n'a été supprimé.")
+        return
+    if unknown(context).is_quiet(user_id):
+        await query.message.reply_text(NO_ACCOUNT)
+        return
+    method, path = ("GET", f"/events/{int(value)}") if action == "evdel" else ("DELETE", f"/events/{int(value)}")
+    try:
+        response = await call(context, method, path, user_id)
+    except httpx.HTTPError:
+        log.exception("echec de la requete vers l'orchestrateur")
+        await query.message.reply_text(UNAVAILABLE)
+        return
+    if response.status_code == 403:
+        unknown(context).mark(user_id)
+        await query.message.reply_text(NO_ACCOUNT)
+    elif response.status_code == 404:
+        await query.message.reply_text("Ce rendez-vous n'existe plus. /agenda pour la liste à jour.")
+    elif response.status_code >= 400:
+        await query.message.reply_text(UNAVAILABLE)
+    elif action == "evdel":
+        event = response.json()["event"]
+        await query.message.reply_text(
+            f"Supprimer « {event['title']} » ?",
+            reply_markup=keyboard([[("Oui, supprimer", f"evok:{event['id']}"), ("Non", "evno")]]),
+        )
+    else:
+        await query.edit_message_text("Rendez-vous supprimé. /agenda pour la liste à jour.")
+
+
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     kind, *rest = briefing_command(context.args)
@@ -871,6 +946,32 @@ async def send_reminders(application: Application) -> int:
     return sent
 
 
+async def send_event_reminders(application: Application) -> int:
+    """Envoie les rappels de rendez-vous dus. Retourne le nombre de rappels envoyés."""
+    http: httpx.AsyncClient = application.bot_data["http"]
+    try:
+        response = await http.post(f"{ORCHESTRATOR_URL}/events/reminders/claim", json={})
+        response.raise_for_status()
+        reminders = response.json()["reminders"]
+    except (httpx.HTTPError, ValueError, KeyError):
+        log.warning("Impossible de relever les rappels de rendez-vous", exc_info=True)
+        return 0
+    sent = 0
+    for reminder in reminders:
+        rendered, plain = telegram_messages(event_reminder_message(reminder))[0]
+        try:
+            try:
+                if rendered is None:
+                    raise BadRequest("html indisponible")
+                await application.bot.send_message(chat_id=reminder["telegram_id"], text=rendered, parse_mode=ParseMode.HTML)
+            except BadRequest:
+                await application.bot.send_message(chat_id=reminder["telegram_id"], text=plain)
+            sent += 1
+        except Exception:  # un rappel qui échoue ne doit pas bloquer les suivants
+            log.exception("Rappel de rendez-vous n°%s non envoyé", reminder.get("id"))
+    return sent
+
+
 async def send_briefings(application: Application) -> int:
     """Envoie les briefings du matin dus. Retourne le nombre de briefings envoyés."""
     http: httpx.AsyncClient = application.bot_data["http"]
@@ -904,6 +1005,7 @@ async def reminder_loop(application: Application) -> None:
         await asyncio.sleep(REMINDER_POLL_SECONDS)
         try:
             await send_reminders(application)
+            await send_event_reminders(application)
             await send_briefings(application)
         except Exception:  # la boucle ne doit jamais s'arrêter
             log.exception("Erreur inattendue dans la boucle des rappels")
@@ -1031,6 +1133,8 @@ def main() -> None:
         ("clients", clients_command),
         ("client", client_cmd),
         ("devis", quote_cmd),
+        ("agenda", agenda_cmd),
+        ("rdv", event_cmd),
         ("entreprise", business_cmd),
         ("annuler", undo_command),
     ):
@@ -1039,6 +1143,7 @@ def main() -> None:
         CallbackQueryHandler(on_decision, pattern=r"^(ok|no):[0-9a-fA-F-]{36}$")
     )
     application.add_handler(CallbackQueryHandler(on_memory_button, pattern=r"^(mdel:[0-9]{1,18}|mall|mall_ok)$"))
+    application.add_handler(CallbackQueryHandler(on_event_button, pattern=r"^(evdel:[0-9]{1,18}|evok:[0-9]{1,18}|evno)$"))
     application.add_handler(CallbackQueryHandler(on_quote_extra_button, pattern=r"^q[pm]:DV-[0-9]{4}-[0-9]{3,6}$"))
     application.add_handler(CallbackQueryHandler(on_quote_button, pattern=r"^qs:DV-[0-9]{4}-[0-9]{3,6}:[ear]$"))
     application.add_handler(CallbackQueryHandler(on_task_button, pattern=r"^(tdone|tcancel):[0-9]{1,18}$"))

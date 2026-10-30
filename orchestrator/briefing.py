@@ -58,6 +58,18 @@ def agenda_events(role, now):
         return False  # configuré mais en panne : on le dit au lieu de l'ignorer
 
 
+def own_events(user_id, now):
+    """Rendez-vous du jour de l'agenda interne, au même format que les événements Google."""
+    start = datetime(now.year, now.month, now.day, tzinfo=TZ)
+    items = db.list_events(user_id, start, start + timedelta(days=1))
+    return [
+        {"debut": e["start_at"].astimezone(TZ).isoformat(timespec="minutes"),
+         "fin": e["end_at"].astimezone(TZ).isoformat(timespec="minutes"),
+         "titre": e["title"], "lieu": e["location"]}
+        for e in items
+    ]
+
+
 def event_line(event):
     start = str(event.get("debut") or "")
     end = str(event.get("fin") or "")
@@ -109,15 +121,17 @@ def build(user_id, role="owner", now=None):
     lines += section("En retard", [task_line(t, today) for t in overdue])
     lines += section("Aujourd'hui", [task_line(t, today) for t in due_today])
 
-    events = agenda_events(role, now)
+    google = agenda_events(role, now)
+    events = own_events(user_id, now) + (google if google else [])
+    events.sort(key=lambda e: (len(str(e.get("debut") or "")) <= 10, str(e.get("debut") or "")))  # les événements à heure d'abord, puis ceux de la journée entière
     if events:
         lines += section("Agenda", [event_line(e) for e in events])
-    elif events is False:
-        lines += ["Agenda indisponible pour le moment.", ""]
+    if google is False:
+        lines += ["Agenda Google indisponible pour le moment.", ""]
 
     lines += section(f"Dans les {SOON_DAYS} prochains jours", [task_line(t, today) for t in soon])
     if undated:
         lines.append(f"{undated} tâche(s) sans échéance. /taches pour les voir.")
-    if not (overdue or due_today or soon or undated or events or events is False):
+    if not (overdue or due_today or soon or undated or events or google is False):
         lines = [lines[0], "", "Rien de prévu aujourd'hui."]
     return "\n".join(lines).strip()

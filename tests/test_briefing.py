@@ -159,7 +159,7 @@ def test_agenda_vide_n_ajoute_rien(db, briefing, tools, alice, now, monkeypatch)
 def test_agenda_en_panne_est_signale(db, briefing, tools, alice, now, monkeypatch):
     fake_agenda(tools, monkeypatch, error=RuntimeError("Google indisponible"))
     text = briefing.build(alice, "owner", now)
-    assert "Agenda indisponible pour le moment." in text and "Google indisponible" not in text
+    assert "Agenda Google indisponible pour le moment." in text and "RuntimeError" not in text
 
 
 def test_la_cause_de_la_panne_d_agenda_est_dans_les_journaux(db, briefing, tools, alice, now, monkeypatch, caplog):

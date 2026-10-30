@@ -515,6 +515,102 @@ def business_message(business):
     return "\n".join(lines)
 
 
+WEEKDAY_NAMES = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
+AGENDA_TITLES = {
+    "": "Agenda des 7 prochains jours", "semaine": "Agenda des 7 prochains jours", "mois": "Agenda des 30 prochains jours",
+    "aujourd'hui": "Agenda d'aujourd'hui", "aujourdhui": "Agenda d'aujourd'hui", "demain": "Agenda de demain",
+}
+MAX_EVENTS_SHOWN = 15
+EVENT_HELP = (
+    "Rendez-vous :\n"
+    "/rdv Titre | quand | durée | lieu : ajouter un rendez-vous (durée et lieu facultatifs)\n"
+    "Exemples : /rdv Réunion | demain 14h | 1h30 | Douala, /rdv Appel Paul | lundi 10h, /rdv Dentiste | 27/11 à 9h30\n"
+    "/agenda : les 7 prochains jours ; aussi /agenda aujourd'hui, /agenda demain, /agenda mois\n"
+    "Sous la liste, un bouton permet de supprimer un rendez-vous. Tu es prévenu avant chaque rendez-vous."
+)
+
+
+def agenda_word(args):
+    """Arguments de /agenda -> mot de période (vide = 7 jours)."""
+    return " ".join(args).strip().lower() if args else ""
+
+
+def day_label(iso_day, today):
+    """« 2026-10-29 » -> « Aujourd'hui · jeudi 29/10 », « Demain · vendredi 30/10 », « samedi 31/10 »."""
+    try:
+        year, month, day = (int(x) for x in str(iso_day)[:10].split("-"))
+        from datetime import date
+
+        target, today_date = date(year, month, day), date.fromisoformat(str(today)[:10])
+    except ValueError:
+        return str(iso_day)
+    base = f"{WEEKDAY_NAMES[target.weekday()]} {target:%d/%m}"
+    delta = (target - today_date).days
+    return {0: "Aujourd'hui · ", 1: "Demain · "}.get(delta, "") + base
+
+
+def event_time(event):
+    return f"{str(event['start'])[11:16]}-{str(event['end'])[11:16]}"
+
+
+def event_text(event):
+    place = f" ({event['location']})" if event.get("location") else ""
+    return f"{event_time(event)} {event['title']}{place}"
+
+
+def agenda_message(data, word=""):
+    events = data.get("events") or []
+    title = AGENDA_TITLES.get(word, AGENDA_TITLES[""])
+    if not events:
+        return f"**{title}**\nRien de prévu. Ajoute un rendez-vous avec /rdv Titre | demain 14h | 1h | lieu."
+    lines = [f"**{title} ({len(events)})**"]
+    current = None
+    for position, event in enumerate(events[:MAX_EVENTS_SHOWN], start=1):
+        day = str(event["start"])[:10]
+        if day != current:
+            current = day
+            lines.append(f"**{day_label(day, data.get('today'))}**")
+        lines.append(f"{position}. {event_text(event)}")
+    if len(events) > MAX_EVENTS_SHOWN:
+        lines.append(f"… et {len(events) - MAX_EVENTS_SHOWN} autre(s).")
+    return "\n".join(lines)
+
+
+def agenda_buttons(events):
+    """Une ligne par rendez-vous affiché : [Supprimer n] (n = position dans la liste)."""
+    return [[(f"Supprimer {n}", f"evdel:{e['id']}")] for n, e in enumerate(events[:MAX_EVENTS_SHOWN], start=1)]
+
+
+def event_created_message(data):
+    event = data["event"]
+    day = str(event["start"])[:10]
+    lines = [f"Rendez-vous ajouté : {day_label(day, day)} {event_text(event)}"]
+    for other in data.get("conflicts") or []:
+        lines.append(f"Attention : il chevauche « {other['title']} » ({event_time(other)}).")
+    return "\n".join(lines)
+
+
+def event_reminder_message(reminder, now=None):
+    """Texte (Markdown) du rappel envoyé avant un rendez-vous."""
+    from datetime import datetime, timezone
+
+    now = now or datetime.now(timezone.utc)
+    try:
+        start = datetime.fromisoformat(reminder["start"])
+        if start.tzinfo is None:  # le serveur envoie toujours un fuseau ; par prudence, UTC sinon
+            start = start.replace(tzinfo=timezone.utc)
+        minutes = round((start - now).total_seconds() / 60)
+    except (KeyError, ValueError):
+        minutes = None
+    if minutes is None:
+        head = "Rendez-vous bientôt"
+    elif minutes <= 0:
+        head = "Rendez-vous maintenant"
+    else:
+        head = f"Rendez-vous dans {minutes} min"
+    return f"**{head}**\n{event_text(reminder)}"
+
+
 def briefing_command(args):
     """Argument de /briefing -> ("status",) | ("preview",) | ("set", payload) | ("invalid",)."""
     if not args:

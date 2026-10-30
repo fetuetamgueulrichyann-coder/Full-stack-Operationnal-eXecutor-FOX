@@ -322,7 +322,7 @@ def load_private_history(user_id, limit):
 def purge_history(owner_days=None, tester_days=None):
     """Supprime les conversations inactives depuis trop longtemps (0 = ne jamais purger).
 
-    Retourne {"chats": n, "private": m, "tasks": t}. Le contexte du mode privé de plus de
+    Retourne {"chats": n, "private": m, "tasks": t, "events": e}. Le contexte du mode privé de plus de
     PRIVATE_CONTEXT_MINUTES minutes est toujours supprimé.
     """
     owner_days = RETENTION_DAYS_OWNER if owner_days is None else owner_days
@@ -345,7 +345,7 @@ def purge_history(owner_days=None, tester_days=None):
             (PRIVATE_CONTEXT_MINUTES,),
         )
         private = cur.rowcount
-    return {"chats": deleted, "private": private, "tasks": purge_closed_tasks()}
+    return {"chats": deleted, "private": private, "tasks": purge_closed_tasks(), "events": purge_old_events()}
 
 
 # --- Tâches ----------------------------------------------------------------
@@ -643,7 +643,7 @@ JOURNAL_AUDIT_EVENTS = (
     "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",
     "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
     "client_created", "client_updated", "client_deleted", "quote_created", "quote_status", "quote_deleted",
-    "quote_pdf", "business_updated",
+    "quote_pdf", "business_updated", "event_created", "event_updated", "event_deleted",
 )
 
 
@@ -1067,3 +1067,146 @@ def delete_business(user_id):
     with cursor() as cur:
         cur.execute("DELETE FROM business_profiles WHERE user_id = %s", (user_id,))
         return cur.rowcount > 0
+
+
+# --- Agenda interne (phase B5) ------------------------------------------------------
+MAX_UPCOMING_EVENTS = int(os.environ.get("MAX_UPCOMING_EVENTS", "200"))
+EVENT_RETENTION_DAYS = int(os.environ.get("EVENT_RETENTION_DAYS", "60"))  # rendez-vous passés ; 0 = jamais
+EVENT_REMINDER_MAX_AGE_MINUTES = 10
+
+
+class EventLimit(Exception):
+    """Trop de rendez-vous à venir pour cet utilisateur."""
+
+
+_EVENT_COLUMNS = "id, title, start_at, end_at, location, created_at, updated_at"
+
+
+def _event(row):
+    return {
+        "id": row[0], "title": row[1], "start_at": row[2], "end_at": row[3], "location": row[4],
+        "created_at": row[5], "updated_at": row[6],
+    }
+
+
+def _lock_events(cur, user_id):
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"events:{user_id}",))
+
+
+def create_event(user_id, title, start_at, end_at, location=None, max_upcoming=None):
+    max_upcoming = MAX_UPCOMING_EVENTS if max_upcoming is None else max_upcoming
+    with cursor() as cur:
+        _lock_events(cur, user_id)
+        cur.execute("SELECT count(*) FROM events WHERE user_id = %s AND end_at > now()", (user_id,))
+        if max_upcoming and cur.fetchone()[0] >= max_upcoming:
+            raise EventLimit(max_upcoming)
+        cur.execute(
+            f"INSERT INTO events (user_id, title, start_at, end_at, location) VALUES (%s, %s, %s, %s, %s) "  # noqa: S608
+            f"RETURNING {_EVENT_COLUMNS}",
+            (user_id, title, start_at, end_at, location),
+        )
+        return _event(cur.fetchone())
+
+
+def list_events(user_id, start, end, limit=100):
+    """Rendez-vous qui touchent la période [start, end[, dans l'ordre chronologique."""
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM events WHERE user_id = %s AND start_at < %s AND end_at > %s "  # noqa: S608
+            "ORDER BY start_at, id LIMIT %s",
+            (user_id, end, start, limit),
+        )
+        return [_event(r) for r in cur.fetchall()]
+
+
+def find_conflicts(user_id, start, end, exclude_id=None):
+    """Rendez-vous de cet utilisateur qui chevauchent [start, end[ (un rendez-vous qui finit quand l'autre commence ne chevauche pas)."""
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM events WHERE user_id = %s AND start_at < %s AND end_at > %s "  # noqa: S608
+            "AND (%s::bigint IS NULL OR id <> %s) ORDER BY start_at, id",
+            (user_id, end, start, exclude_id, exclude_id),
+        )
+        return [_event(r) for r in cur.fetchall()]
+
+
+def get_event(user_id, event_id):
+    with cursor() as cur:
+        cur.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM events WHERE id = %s AND user_id = %s",  # noqa: S608
+            (event_id, user_id),
+        )
+        row = cur.fetchone()
+    return _event(row) if row else None
+
+
+def update_event(user_id, event_id, title=None, start_at=None, end_at=None, location=_UNSET):
+    """Modifie un rendez-vous de cet utilisateur (location=None efface le lieu). None si introuvable.
+
+    Un changement d'horaire remet le rappel à zéro.
+    """
+    with cursor() as cur:
+        _lock_events(cur, user_id)
+        cur.execute("SELECT start_at, end_at FROM events WHERE id = %s AND user_id = %s FOR UPDATE", (event_id, user_id))
+        current = cur.fetchone()
+        if current is None:
+            return None
+        new_start = current[0] if start_at is None else start_at
+        new_end = current[1] if end_at is None else end_at
+        moved = (new_start, new_end) != (current[0], current[1])
+        cur.execute(
+            f"""
+            UPDATE events SET title = COALESCE(%s, title), start_at = %s, end_at = %s,
+                   location = CASE WHEN %s THEN location ELSE %s END,
+                   reminded_at = CASE WHEN %s THEN NULL ELSE reminded_at END, updated_at = now()
+            WHERE id = %s AND user_id = %s RETURNING {_EVENT_COLUMNS}
+            """,  # noqa: S608 (colonnes fixes)
+            (title, new_start, new_end, location is _UNSET, None if location is _UNSET else location,
+             moved, event_id, user_id),
+        )
+        return _event(cur.fetchone())
+
+
+def delete_event(user_id, event_id):
+    with cursor() as cur:
+        cur.execute("DELETE FROM events WHERE id = %s AND user_id = %s", (event_id, user_id))
+        return cur.rowcount > 0
+
+
+def purge_old_events(days=None):
+    """Supprime les rendez-vous terminés depuis plus de `days` jours (0 = jamais)."""
+    days = EVENT_RETENTION_DAYS if days is None else days
+    if not days or days <= 0:
+        return 0
+    with cursor() as cur:
+        cur.execute("DELETE FROM events WHERE end_at < now() - make_interval(days => %s)", (days,))
+        return cur.rowcount
+
+
+def claim_due_event_reminders(lead_minutes, limit=20):
+    """Rendez-vous à rappeler maintenant : l'heure de rappel (début moins `lead_minutes`) est passée, le rendez-vous
+    n'a pas commencé depuis plus de 10 minutes, et le rendez-vous existait déjà avant cette heure de rappel
+    (créer un rendez-vous pour dans 10 minutes ne déclenche pas de rappel immédiat). Chacun n'est rendu qu'une fois."""
+    if not lead_minutes or lead_minutes <= 0:
+        return []
+    with cursor() as cur:
+        cur.execute(
+            """
+            UPDATE events e SET reminded_at = now()
+            FROM users u
+            WHERE e.id IN (
+                    SELECT id FROM events
+                    WHERE reminded_at IS NULL
+                      AND start_at - make_interval(mins => %s) <= now()
+                      AND start_at > now() - make_interval(mins => %s)
+                      AND updated_at <= start_at - make_interval(mins => %s)
+                    ORDER BY start_at LIMIT %s FOR UPDATE SKIP LOCKED)
+              AND u.id = e.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
+            RETURNING e.id, e.title, e.start_at, e.end_at, e.location, u.telegram_id
+            """,
+            (lead_minutes, EVENT_REMINDER_MAX_AGE_MINUTES, lead_minutes, limit),
+        )
+        return [
+            {"id": r[0], "title": r[1], "start_at": r[2], "end_at": r[3], "location": r[4], "telegram_id": r[5]}
+            for r in cur.fetchall()
+        ]

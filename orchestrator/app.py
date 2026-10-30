@@ -3,7 +3,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import Flask, Response, jsonify, request
 from google.genai import errors
@@ -16,6 +16,7 @@ import formatting
 import journal
 import mail
 import memory
+import agenda
 import commercial
 import quote_pdf
 import tasks
@@ -70,10 +71,10 @@ def maybe_purge():
     except Exception:
         log.exception("echec de la purge de l'historique")
         return
-    if result["chats"] or result["private"] or result["tasks"]:
+    if result["chats"] or result["private"] or result["tasks"] or result.get("events"):
         log.info(
-            "Purge : %s conversation(s), %s contexte(s) privé(s), %s tâche(s) close(s)",
-            result["chats"], result["private"], result["tasks"],
+            "Purge : %s conversation(s), %s contexte(s) privé(s), %s tâche(s) close(s), %s rendez-vous passé(s)",
+            result["chats"], result["private"], result["tasks"], result.get("events", 0),
         )
 
 
@@ -471,6 +472,118 @@ def tasks_delete(task_id):
         return jsonify(error="tâche introuvable"), 404
     db.audit(user["id"], "task_deleted", None, {"task_id": task_id})
     return jsonify(status="deleted")
+
+
+# --- Agenda interne (phase B5) ---------------------------------------------------------
+def event_payload(event, conflicts):
+    return {"event": agenda.public(event), "conflicts": [agenda.public(c) for c in conflicts]}
+
+
+@app.get("/events")
+def events_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    now = datetime.now(tasks.TZ)
+    try:
+        start, days = agenda.parse_range(request.args.get("range"), now)
+    except agenda.AgendaInputError as exc:
+        return jsonify(error=str(exc)), 400
+    items = db.list_events(user["id"], start, start + timedelta(days=days))
+    return jsonify(today=now.date().isoformat(), events=[agenda.public(e) for e in items])
+
+
+@app.get("/events/<int:event_id>")
+def events_get(event_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    event = db.get_event(user["id"], event_id)
+    if event is None:
+        return jsonify(error="rendez-vous introuvable"), 404
+    return jsonify(event=agenda.public(event))
+
+
+@app.post("/events")
+def events_create():
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    try:
+        if "text" in data:  # « titre | quand | durée | lieu »
+            fields = agenda.parse_event(data["text"])
+        else:
+            start = agenda.parse_start(data.get("start"))
+            fields = {
+                "title": agenda.clean_title(data.get("title")), "start": start,
+                "end": start + agenda.parse_duration(data.get("duration")),
+                "location": agenda.clean_location(data.get("location")),
+            }
+        event = db.create_event(user["id"], fields["title"], fields["start"], fields["end"], fields["location"])
+    except agenda.AgendaInputError as exc:
+        return jsonify(error=str(exc)), 400
+    except db.EventLimit as exc:
+        return jsonify(error=f"Limite de {exc.args[0]} rendez-vous à venir atteinte."), 409
+    db.audit(user["id"], "event_created", None, {"event_id": event["id"]})
+    conflicts = db.find_conflicts(user["id"], event["start_at"], event["end_at"], exclude_id=event["id"])
+    return jsonify(event_payload(event, conflicts)), 201
+
+
+@app.patch("/events/<int:event_id>")
+def events_update(event_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    current = db.get_event(user["id"], event_id)
+    if current is None:
+        return jsonify(error="rendez-vous introuvable"), 404
+    changes = {}
+    try:
+        if "title" in data:
+            changes["title"] = agenda.clean_title(data["title"])
+        if "location" in data:
+            changes["location"] = agenda.clean_location(data["location"])
+        if "start" in data or "duration" in data:
+            start = agenda.parse_start(data["start"]) if "start" in data else current["start_at"]
+            if "duration" in data:
+                duration = agenda.parse_duration(data["duration"])
+            else:
+                duration = current["end_at"] - current["start_at"]
+            changes["start_at"], changes["end_at"] = start, start + duration
+        if not changes:
+            return jsonify(error="aucune modification demandée"), 400
+    except agenda.AgendaInputError as exc:
+        return jsonify(error=str(exc)), 400
+    event = db.update_event(user["id"], event_id, **changes)
+    db.audit(user["id"], "event_updated", None, {"event_id": event_id, "fields": sorted(changes)})
+    conflicts = db.find_conflicts(user["id"], event["start_at"], event["end_at"], exclude_id=event_id)
+    return jsonify(event_payload(event, conflicts))
+
+
+@app.delete("/events/<int:event_id>")
+def events_delete(event_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not db.delete_event(user["id"], event_id):
+        return jsonify(error="rendez-vous introuvable"), 404
+    db.audit(user["id"], "event_deleted", None, {"event_id": event_id})
+    return jsonify(status="deleted")
+
+
+@app.post("/events/reminders/claim")
+def event_reminders_claim():
+    """Rappels de rendez-vous dus, pour le bot Telegram uniquement. Chaque rappel n'est rendu qu'une fois."""
+    if not service_token_valid(request.headers.get("X-Fox-Service-Token")):
+        return jsonify(error="non authentifie"), 401
+    return jsonify(reminders=[
+        {"telegram_id": r["telegram_id"], "id": r["id"], "title": r["title"], "location": r["location"],
+         "start": r["start_at"].astimezone(tasks.TZ).isoformat(timespec="minutes"),
+         "end": r["end_at"].astimezone(tasks.TZ).isoformat(timespec="minutes")}
+        for r in db.claim_due_event_reminders(agenda.REMIND_MINUTES)
+    ])
 
 
 # --- Clients et devis (phase C) ----------------------------------------------------
