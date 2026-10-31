@@ -91,15 +91,15 @@ def providers(agent, monkeypatch):
 
     def groq(user_id, text, *_):
         state.groq.append((user_id, text))
-        return "réponse Groq", 12
+        return "réponse Groq", 12, []
 
     monkeypatch.setattr(agent, "generate_with_retry", gemini)
-    monkeypatch.setattr(agent, "groq_reply", groq)
+    monkeypatch.setattr(agent, "groq_chat", groq)
     monkeypatch.setattr(agent, "GROQ_API_KEY", "cle-groq-de-test")
     return state
 
 
-def test_un_testeur_passe_uniquement_par_groq_sans_outils(agent, providers):
+def test_un_testeur_passe_uniquement_par_groq(agent, providers):
     assert agent.chat(5, "Bonjour", "tester") == ("réponse Groq", 12, [])
     assert providers.gemini == 0 and providers.groq == [(5, "Bonjour")]
 
@@ -108,7 +108,7 @@ def test_un_testeur_n_est_jamais_bascule_vers_gemini_si_groq_est_indisponible(ag
     def down(user_id, text, *_):
         raise agent.LLMUnavailable("Groq indisponible")
 
-    monkeypatch.setattr(agent, "groq_reply", down)
+    monkeypatch.setattr(agent, "groq_chat", down)
     with pytest.raises(agent.LLMUnavailable):
         agent.chat(5, "Bonjour", "tester")
     assert providers.gemini == 0

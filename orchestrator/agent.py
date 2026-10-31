@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import random
@@ -11,6 +12,7 @@ from google.genai import errors, types
 
 import db
 import memory
+import agenda_tools  # noqa: F401  (enregistre les outils de l'agenda interne)
 import tasks  # noqa: F401  (enregistre les outils de tâches)
 from tools import IRREVERSIBLE, REGISTRY, TZ, TZ_NAME, Tool, register
 
@@ -37,6 +39,7 @@ HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "10"))
 PENDING_TTL_MINUTES = int(os.environ.get("PENDING_TTL_MINUTES", "10"))
 UNDO_WINDOW_MINUTES = int(os.environ.get("UNDO_WINDOW_MINUTES", "60"))
 MAX_TOOL_ROUNDS = 5
+GROQ_MAX_TOOL_ROUNDS = int(os.environ.get("GROQ_MAX_TOOL_ROUNDS", "3"))
 
 # Nouvelles tentatives en cas d'erreur temporaire de Gemini (429, 500, 502, 503, 504, réseau)
 LLM_MAX_ATTEMPTS = int(os.environ.get("LLM_MAX_ATTEMPTS", "4"))
@@ -75,10 +78,18 @@ PROMPT_WITH_TOOLS = (
     "Quand l'utilisateur te demande de retenir une information durable, utilise retenir ; "
     "pour l'oublier, utilise oublier_memoire avec le numéro entre crochets. "
     "Ne mémorise jamais de mot de passe ni d'information sensible. "
-    "Pour modifier ou supprimer un événement, retrouve d'abord son identifiant avec lire_agenda, "
-    "sans jamais inventer d'identifiant. "
+    "Les rendez-vous se gèrent avec lister_rdv, creer_rdv, modifier_rdv et supprimer_rdv (agenda interne de FOX, "
+    "avec rappel avant l'heure) : donne toujours une date et une heure précises à partir de la date actuelle, "
+    "et pour modifier ou supprimer un rendez-vous, retrouve d'abord son numéro avec lister_rdv. "
     "Les actions d'écriture sont soumises à la confirmation de l'utilisateur : "
     "propose-les simplement, sans affirmer qu'elles sont déjà faites."
+)
+
+PROMPT_GOOGLE_CALENDAR = (
+    " Pour l'agenda Google (lire_agenda, creer_evenement, modifier_evenement, supprimer_evenement), "
+    "réservé au propriétaire, utilise-le seulement si l'utilisateur parle de Google Agenda ; "
+    "sinon utilise les rendez-vous internes. Pour modifier ou supprimer un événement Google, "
+    "retrouve d'abord son identifiant avec lire_agenda, sans jamais inventer d'identifiant."
 )
 
 PROMPT_WITHOUT_TOOLS = (
@@ -224,32 +235,140 @@ def propose_undo(user_id):
 
 
 # --- Secours Groq (conversation seule, sans outils) ---------------------------
-def groq_complete(messages, temperature=0.7):
-    """Appel Groq avec plafond journalier. Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue."""
+def groq_post(messages, temperature=0.7, tools=None):
+    """Appel Groq avec plafond journalier. Retourne (message de l'assistant, tokens).
+
+    Lève LLMUnavailable si Groq échoue. Le message peut contenir `tool_calls` quand `tools` est fourni.
+    """
     if not db.reserve_provider("groq", GROQ_MAX_CALLS_PER_DAY, GROQ_MAX_TOKENS_PER_DAY):
         log.warning("Plafond journalier Groq atteint")
         raise ProviderQuotaExceeded("plafond Groq atteint")
+    payload = {"model": GROQ_MODEL, "messages": messages, "temperature": temperature}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
     try:
         response = httpx.post(
             GROQ_URL,
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": GROQ_MODEL, "messages": messages, "temperature": temperature},
+            json=payload,
             timeout=GROQ_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         data = response.json()
-        reply = (data["choices"][0]["message"].get("content") or "").strip()
+        message = data["choices"][0]["message"]
     except (httpx.HTTPError, ValueError, KeyError, IndexError) as exc:
         # On ne journalise jamais les en-têtes : ils contiennent la clé API.
         status = getattr(getattr(exc, "response", None), "status_code", None)
         log.error("Secours Groq en échec (%s, statut=%s)", type(exc).__name__, status)
         raise LLMUnavailable("Groq indisponible") from exc
-    if not reply:
-        raise LLMUnavailable("Groq a renvoyé une réponse vide")
     tokens = (data.get("usage") or {}).get("total_tokens") or 0
     if tokens:
         db.add_provider_tokens("groq", tokens)
+    return message, tokens
+
+
+def groq_complete(messages, temperature=0.7):
+    """Réponse texte de Groq. Retourne (réponse, tokens). Lève LLMUnavailable si Groq échoue."""
+    message, tokens = groq_post(messages, temperature)
+    reply = (message.get("content") or "").strip()
+    if not reply:
+        raise LLMUnavailable("Groq a renvoyé une réponse vide")
     return reply, tokens
+
+
+def openai_schema(schema):
+    """Schéma de paramètres Gemini (types en majuscules) -> schéma JSON classique."""
+    if isinstance(schema, dict):
+        return {k: (v.lower() if k == "type" and isinstance(v, str) else openai_schema(v)) for k, v in schema.items()}
+    return schema
+
+
+def groq_tool_specs(role, private=False):
+    return [
+        {"type": "function", "function": {
+            "name": t.name, "description": t.description,
+            "parameters": openai_schema(t.parameters) if t.parameters else {"type": "object", "properties": {}},
+        }}
+        for t in exposed_tools(role) if not (private and t.name in PRIVATE_HIDDEN_TOOLS)
+    ]
+
+
+def dispatch_tool_call(user_id, role, name, args):
+    """Traite un appel d'outil demandé par le modèle. Retourne ("result"|"error"|"pending", valeur)."""
+    tool = REGISTRY.get(name)
+    if tool is None or not tool.expose or not tool.allowed_for(role):
+        db.audit(user_id, "denied", name, {"reason": "outil inconnu ou non autorisé"})
+        return "error", "outil inconnu"
+    if not tool.needs_confirmation:
+        try:
+            result = tool.execute(args, user_id)
+        except Exception as exc:
+            log.exception("echec de l'outil %s", name)
+            db.audit(user_id, "failed", name, {"args": args, "mode": "direct"})
+            return "error", f"echec de l'outil : {exc}"
+        db.audit(user_id, "executed", name, {"args": args, "mode": "direct"})
+        return "result", result
+    try:
+        summary = tool.summarize(args, user_id)
+    except Exception as exc:
+        return "error", f"parametres invalides : {exc}"
+    action_id = db.create_pending(user_id, name, args, summary, PENDING_TTL_MINUTES)
+    db.audit(user_id, "proposed", name, {"action_id": action_id, "args": args})
+    return "pending", {"id": action_id, "summary": summary}
+
+
+def groq_chat(user_id, text, role="tester", chat_id=None, private=False):
+    """Conversation d'un testeur sur Groq, avec les outils de son rôle. Retourne (réponse, tokens, actions en attente).
+
+    Sans outil disponible, ou si Groq refuse la requête avec outils au premier tour, la conversation
+    se poursuit en texte seul. Le nombre de tours d'outils est borné pour économiser le quota partagé.
+    """
+    specs = groq_tool_specs(role, private)
+    if not specs:
+        reply, tokens = groq_reply(user_id, text, chat_id, private)
+        return reply, tokens, []
+    messages = [{"role": "system", "content": system_prompt(role=role, user_id=user_id)}]
+    for user_message, bot_reply in useful_history(user_id, GROQ_HISTORY_LIMIT, chat_id, private):
+        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "assistant", "content": bot_reply})
+    messages.append({"role": "user", "content": text})
+    total = 0
+    for round_index in range(GROQ_MAX_TOOL_ROUNDS):
+        try:
+            message, tokens = groq_post(messages, tools=specs)
+        except ProviderQuotaExceeded:
+            raise
+        except LLMUnavailable:
+            if round_index != 0:
+                raise
+            log.warning("Groq a refusé la requête avec outils, nouvelle tentative sans outils")
+            reply, tokens = groq_reply(user_id, text, chat_id, private)
+            return reply, total + tokens, []
+        total += tokens
+        calls = message.get("tool_calls") or []
+        if not calls:
+            reply = (message.get("content") or "").strip()
+            return reply or EMPTY_REPLY, total, []
+        messages.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": calls})
+        pending = []
+        for call in calls:
+            function = call.get("function") or {}
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+                if not isinstance(args, dict):
+                    raise ValueError("arguments invalides")
+            except ValueError:
+                kind, value = "error", "arguments invalides"
+            else:
+                kind, value = dispatch_tool_call(user_id, role, function.get("name", ""), args)
+            if kind == "pending":
+                pending.append(value)
+            content = {"error": value} if kind == "error" else {"result": value} if kind == "result" else {"status": "en attente de confirmation"}
+            messages.append({"role": "tool", "tool_call_id": call.get("id", ""), "content": json.dumps(content, ensure_ascii=False, default=str)})
+        if pending:
+            return "Action en attente de confirmation.", total, pending
+    return "Je n'ai pas pu terminer cette demande.", total, []
 
 
 def groq_reply(user_id, text, chat_id=None, private=False):
@@ -303,6 +422,8 @@ def system_prompt(with_tools=True, role="owner", user_id=None):
     now = datetime.now(TZ).isoformat(timespec="minutes")
     has_tools = with_tools and bool(exposed_tools(role))
     tools_part = PROMPT_WITH_TOOLS if has_tools else PROMPT_WITHOUT_TOOLS
+    if has_tools and any(t.name == "lire_agenda" for t in exposed_tools(role)):
+        tools_part += PROMPT_GOOGLE_CALENDAR
     remembered = memory.prompt_block(user_id) if user_id is not None else ""
     return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {TZ_NAME}).{remembered}"
 
@@ -392,14 +513,13 @@ def chat(user_id, text, role="owner", chat_id=None, private=False):
     """Retourne (réponse, tokens consommés, actions en attente).
 
     Routage : le propriétaire utilise Gemini (avec ses outils, secours Groq en conversation
-    seule) ; les testeurs utilisent uniquement Groq, sans outils. Aucun testeur n'est basculé
+    seule) ; les testeurs utilisent uniquement Groq (avec les outils de leur rôle). Aucun testeur n'est basculé
     automatiquement vers l'offre gratuite de Gemini.
     """
     if role != "owner":
         if not GROQ_API_KEY:
             raise LLMUnavailable("aucun fournisseur disponible pour ce rôle")
-        reply, tokens = groq_reply(user_id, text, chat_id, private)
-        return reply, tokens, []
+        return groq_chat(user_id, text, role, chat_id, private)
 
     contents = build_contents(user_id, text, chat_id, private)
     config = build_config(role, user_id, private)

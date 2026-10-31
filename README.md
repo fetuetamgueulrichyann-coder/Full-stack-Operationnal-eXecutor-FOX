@@ -65,7 +65,7 @@ Deux rôles :
 |---|---|---|
 | Création | automatique au démarrage, depuis `TELEGRAM_ALLOWED_USER_ID` | inscription avec un code d'invitation |
 | IA | Gemini, secours Groq en conversation seule | Groq uniquement, jamais Gemini |
-| Outils | Google Agenda (avec confirmation) | aucun pour l'instant (agenda interne en phase B) |
+| Outils | Google Agenda, agenda interne, tâches, mémoire (écritures avec confirmation) | agenda interne, tâches, mémoire (écritures avec confirmation) |
 | Quota par jour | 200 appels, 500 000 tokens | 30 appels, 15 000 tokens |
 
 Les plafonds globaux (`MAX_CALLS_PER_DAY`, `MAX_TOKENS_PER_DAY`) et ceux de Groq
@@ -115,7 +115,7 @@ compte propriétaire.
 
 1. `docker compose exec orchestrator python admin.py create-invite --days 7 --uses 1 --note "Marie"`
 2. Tu transmets le code. La personne ouvre le bot et envoie `/start FOX-XXXX-XXXX-XXXX`.
-3. Son compte testeur est créé (Groq, sans outils, 30 appels et 15 000 tokens par jour).
+3. Son compte testeur est créé (Groq avec outils, 30 appels et 15 000 tokens par jour).
 
 Les essais de code sont limités (10 échecs par identifiant Telegram), un compte déjà inscrit
 ne consomme pas le code, et le code est à usage unique par défaut.
@@ -238,6 +238,7 @@ Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste r
 - Un rappel Telegram est envoyé `AGENDA_REMIND_MINUTES` (30) minutes avant ; changer l'heure d'un rendez-vous réarme son rappel.
 - Le briefing du matin fusionne les rendez-vous internes et Google.
 - Limites : `MAX_UPCOMING_EVENTS` (200 à venir), `EVENT_RETENTION_DAYS` (60 jours de conservation après la fin).
+- Par la conversation (testeurs comme propriétaire) : « ajoute une réunion demain à 14h », « qu'ai-je cette semaine ? », « déplace-la à 16h », « supprime le dentiste ». Outils `lister_rdv`, `creer_rdv`, `modifier_rdv`, `supprimer_rdv` : la lecture est directe, les écritures demandent une confirmation (boutons) et la création peut être annulée (« annule »). Le propriétaire garde Google Agenda (`lire_agenda`…), utilisé seulement s'il le demande.
 - API : `GET/POST /events`, `GET/PATCH/DELETE /events/<id>`, `POST /events/reminders/claim` (jeton de service).
 
 ## Tests
@@ -258,9 +259,11 @@ Les tests des scripts de sauvegarde sont ignorés si `pg_dump` est absent du con
 - **Gemini** (principal) : erreurs 429, 500, 502, 503 et 504 réessayées avec des
   délais progressifs (`LLM_MAX_ATTEMPTS`, `LLM_RETRY_BUDGET_SECONDS`), puis
   erreur contrôlée (HTTP 503) affichée clairement dans Telegram.
-- **Groq** (conversation seule, sans outils) : modèle principal des testeurs et
-  secours du propriétaire (seulement au premier tour d'une conversation).
-  L'agenda ne passe jamais par Groq.
+- **Groq** : modèle principal des testeurs, avec les outils de leur rôle (rendez-vous,
+  tâches, mémoire ; au plus `GROQ_MAX_TOOL_ROUNDS` = 3 tours d'outils par message, chaque
+  tour comptant dans le quota). Si Groq refuse une requête avec outils, la réponse est
+  redemandée en texte seul. Secours du propriétaire en conversation seule (premier tour
+  uniquement). Le Google Agenda ne passe jamais par Groq.
   Les modèles Groq changent : `docker compose exec orchestrator python check_models.py`
   vérifie que `GROQ_MODEL` existe encore sur ton compte.
 
