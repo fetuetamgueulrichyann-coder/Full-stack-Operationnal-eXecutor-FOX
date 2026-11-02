@@ -1,6 +1,6 @@
 """Journal lisible des actions de FOX (phase B2)."""
 import db
-from tools import TZ
+from tools import tz
 
 STATUS_LABELS = {
     "pending": "En attente",
@@ -34,6 +34,7 @@ EVENT_LABELS = {
     "event_created": "Rendez-vous ajouté",
     "event_updated": "Rendez-vous modifié",
     "event_deleted": "Rendez-vous supprimé",
+    "timezone_set": "Fuseau horaire modifié",
 }
 
 
@@ -46,6 +47,6 @@ def describe(entry):
 
 def entries(user_id, limit=15):
     return [
-        {"at": e["at"].astimezone(TZ).isoformat(timespec="minutes"), "text": describe(e)}
+        {"at": e["at"].astimezone(tz()).isoformat(timespec="minutes"), "text": describe(e)}
         for e in db.journal_entries(user_id, limit)
     ]

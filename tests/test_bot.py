@@ -341,7 +341,7 @@ def test_confirmation_refusee_pour_un_inconnu(server, context):
 # --- Enregistrement des gestionnaires -------------------------------------------
 def test_toutes_les_commandes_annoncees_ont_un_gestionnaire():
     declared = {c.command for c in bot.COMMANDS}
-    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "annuler", "aide"}
+    assert declared == {"nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "fuseau", "annuler", "aide"}
     for name in declared:
         assert f"/{name}" in bot.HELP or name == "aide"
 
@@ -365,7 +365,7 @@ def test_main_enregistre_commandes_et_boutons(monkeypatch):
             commands |= set(handler.commands)
         if hasattr(handler, "pattern") and handler.pattern is not None:
             patterns.append(handler.pattern)
-    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "annuler"}
+    assert commands == {"start", "aide", "help", "nouveau", "historique", "effacer", "prive", "taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "fuseau", "annuler"}
     uuid_data = "ok:6f1f5c4e-2b0a-4a2e-9d57-5c1f3a5b7d11"
     for data in ("open:9", "del:9", "delall", "delall_ok", "keep", "tdone:9", "tcancel:9", "mdel:9", "mall", "mall_ok", uuid_data):
         assert sum(1 for p in patterns if p.match(data)) == 1, data  # un seul gestionnaire
@@ -552,7 +552,7 @@ def test_ajout_simple_ne_montre_pas_de_numero_interne(server, context):
 
 
 def test_commandes_declarees_et_aide():
-    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv"} <= {c.command for c in bot.COMMANDS}
+    assert {"taches", "tache", "memoire", "retiens", "journal", "briefing", "mail", "clients", "client", "devis", "entreprise", "agenda", "rdv", "fuseau"} <= {c.command for c in bot.COMMANDS}
     for command in ("/taches", "/tache ", "/memoire", "/retiens", "/journal", "/briefing"):
         assert command in bot.HELP
 
@@ -1632,3 +1632,100 @@ def test_botlogic_agenda_helpers():
     assert botlogic.agenda_buttons([EVENT]) == [[("Supprimer 1", "evdel:7")]]
     assert "maintenant" in botlogic.event_reminder_message(
         dict(EVENT, start="2000-01-01T10:00"), __import__("datetime").datetime(2030, 1, 1, tzinfo=__import__("datetime").timezone.utc))
+
+
+# --- Fuseau, séries et tâches liées (B6) -------------------------------------------------
+def test_fuseau_affiche_le_fuseau_actuel(server, context):
+    server.routes[("GET", "/timezone")] = Response(200, {"timezone": "Africa/Douala", "default": "Africa/Douala", "custom": False, "now": "2026-11-01T08:15+01:00"})
+    upd, msg = update("/fuseau")
+    run(bot.timezone_cmd(upd, context))
+    assert server.calls == [("GET", "/timezone", 900, None)]
+    text = msg.replies[0][0]
+    assert "Africa/Douala (par défaut)" in text and "08:15" in text and "/fuseau Paris" in text
+
+
+def test_fuseau_change_le_fuseau(server, context):
+    server.routes[("POST", "/timezone")] = Response(200, {"timezone": "Europe/Paris", "default": "Africa/Douala", "custom": True, "now": "2026-11-01T09:15+01:00"})
+    upd, msg = update("/fuseau Paris")
+    run(bot.timezone_cmd(upd, context))
+    assert server.calls == [("POST", "/timezone", 900, {"timezone": "Paris"})]
+    assert "Fuseau enregistré : Europe/Paris" in msg.replies[0][0] and "même instant" in msg.replies[0][0]
+
+
+def test_fuseau_inconnu_est_refuse(server, context):
+    server.routes[("POST", "/timezone")] = Response(400, {"error": "Fuseau « Mars » inconnu."})
+    upd, msg = update("/fuseau Mars")
+    run(bot.timezone_cmd(upd, context))
+    assert "inconnu" in msg.replies[0][0]
+
+
+SERIES_EVENT = dict(EVENT, id=9, repeat="chaque semaine", occurrence="2030-01-10", tasks=[{"id": 1, "title": "Slides"}])
+
+
+def test_agenda_montre_numero_repetition_et_taches():
+    text = botlogic.agenda_message({"today": "2030-01-09", "events": [SERIES_EVENT, dict(SERIES_EVENT, occurrence="2030-01-17", start="2030-01-17T14:00", end="2030-01-17T15:30")]})
+    assert "(n°9)" in text and "chaque semaine" in text
+    assert text.count("↳ à faire : Slides") == 1  # les tâches d'une série ne sont montrées qu'une fois
+
+
+def test_boutons_agenda_joignent_le_jour_d_une_occurrence():
+    rows = botlogic.agenda_buttons([SERIES_EVENT, EVENT])
+    assert rows == [[("Supprimer 1", "evdel:9:20300110")], [("Supprimer 2", "evdel:7")]]
+
+
+def test_supprimer_une_serie_propose_occurrence_ou_serie(server, context):
+    server.routes[("GET", "/events/9")] = Response(200, {"event": SERIES_EVENT})
+    query = Query("evdel:9:20300110", 900)
+    query.message = Message()
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    text, markup = query.message.replies[0]
+    assert "se répète" in text
+    assert buttons(markup) == [[("Seulement le 10/01", "evskip:9:20300110")], [("Toute la série", "evok:9")], [("Non", "evno")]]
+
+
+def test_supprimer_une_seule_occurrence(server, context):
+    server.routes[("DELETE", "/events/9")] = Response(200, {"status": "occurrence_deleted"})
+    query = Query("evskip:9:20300110", 900)
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    assert server.calls == [("DELETE", "/events/9", 900, {"occurrence": "2030-01-10"})]
+    assert "Occurrence supprimée" in query.edits[0][0]
+
+
+def test_supprimer_toute_la_serie(server, context):
+    server.routes[("DELETE", "/events/9")] = Response(200, {"status": "deleted"})
+    query = Query("evok:9", 900)
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    assert server.calls == [("DELETE", "/events/9", 900, None)]
+
+
+def test_rdv_simple_garde_la_confirmation_oui_non(server, context):
+    server.routes[("GET", "/events/7")] = Response(200, {"event": dict(EVENT, tasks=[])})
+    query = Query("evdel:7", 900)
+    query.message = Message()
+    run(bot.on_event_button(SimpleNamespace(callback_query=query), context))
+    assert ("Oui, supprimer", "evok:7") in buttons(query.message.replies[0][1])[0]
+
+
+def test_motif_des_boutons_d_agenda():
+    import re
+
+    for good in ("evdel:7", "evdel:9:20300110", "evok:9", "evskip:9:20300110", "evno"):
+        assert re.match(bot.EVENT_BUTTON_PATTERN, good), good
+    for bad in ("evskip:9", "evdel:9:2030", "evok:9:20300110", "evdel:x", "evdel:9:20300110:1"):
+        assert not re.match(bot.EVENT_BUTTON_PATTERN, bad), bad
+
+
+def test_creation_d_un_rendez_vous_indique_le_numero_pour_lier_une_tache():
+    text = botlogic.event_created_message({"event": EVENT, "conflicts": []})
+    assert "(n°7)" in text and "rdv 7" in text
+
+
+def test_rappel_avec_taches_a_faire():
+    text = botlogic.event_reminder_message(dict(EVENT, tasks=["Slides", "Imprimer"], start="2030-01-10T14:00+01:00"),
+                                           __import__("datetime").datetime(2030, 1, 10, 12, 50, tzinfo=__import__("datetime").timezone.utc))
+    assert "À faire avant : Slides, Imprimer" in text
+
+
+def test_liste_des_taches_montre_le_rendez_vous():
+    text = botlogic.tasks_message([{"id": 1, "title": "Slides", "priority": "normale", "status": "a_faire", "event_title": "Comité"}])
+    assert "Slides (rdv : Comité)" in text

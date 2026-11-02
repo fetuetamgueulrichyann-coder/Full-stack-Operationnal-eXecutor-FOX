@@ -241,6 +241,13 @@ Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste r
 - Par la conversation (testeurs comme propriétaire) : « ajoute une réunion demain à 14h », « qu'ai-je cette semaine ? », « déplace-la à 16h », « supprime le dentiste ». Outils `lister_rdv`, `creer_rdv`, `modifier_rdv`, `supprimer_rdv` : la lecture est directe, les écritures demandent une confirmation (boutons) et la création peut être annulée (« annule »). Le propriétaire garde Google Agenda (`lire_agenda`…), utilisé seulement s'il le demande.
 - API : `GET/POST /events`, `GET/PATCH/DELETE /events/<id>`, `POST /events/reminders/claim` (jeton de service).
 
+### Rendez-vous récurrents, tâches liées, fuseau horaire (phase B6)
+
+- **Répétition** : `/rdv Point d'équipe | lundi 9h | 30 min | Salle 2 | chaque semaine jusqu'au 31/12`. Répétitions : `chaque jour`, `jours ouvrés` (lundi-vendredi), `chaque semaine`, `chaque mois` (le 31 devient le dernier jour des mois plus courts). Les occurrences sont calculées à la lecture ; chacune est rappelée à son tour. Le bouton « Supprimer n » d'une série propose « Seulement le jj/mm » ou « Toute la série ». Déplacer une série (`modifier_rdv`, `PATCH /events/<id>`) change sa première occurrence. L'heure d'une série reste celle du fuseau où elle a été créée.
+- **Tâches liées** : `/tache Préparer les slides | demain | haute | rdv 12` (le numéro `n°` s'affiche dans `/agenda` et à la création d'un rendez-vous). Les tâches ouvertes apparaissent sous le rendez-vous dans `/agenda`, dans le rappel (« À faire avant ») et dans le briefing (« à préparer »). Supprimer le rendez-vous conserve la tâche. Par la conversation : « ajoute une tâche préparer les slides pour la réunion ».
+- **Fuseau** : `/fuseau` (voir), `/fuseau Paris` ou `/fuseau Europe/Paris` (changer), `/fuseau défaut`. Il règle la saisie et l'affichage des horaires, les rappels, le briefing du matin (heure locale de chacun) et l'heure donnée à l'IA. Les rendez-vous existants gardent le même instant ; seule leur heure affichée change. Fuseau par défaut : variable `TIMEZONE`.
+- API : `GET/POST /timezone`, `repeat` / `until` sur `POST/PATCH /events`, `DELETE /events/<id>` avec `{"occurrence": "AAAA-MM-JJ"}`, `event_id` sur `POST/PATCH /tasks`.
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

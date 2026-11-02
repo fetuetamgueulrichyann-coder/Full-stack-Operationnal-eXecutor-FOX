@@ -20,6 +20,8 @@ import agenda
 import commercial
 import quote_pdf
 import tasks
+import timezones
+import tools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orchestrator")
@@ -92,6 +94,11 @@ def require_json_for_post():
         return jsonify(error="Content-Type application/json requis"), 415
 
 
+@app.teardown_request
+def forget_user_zone(exc=None):
+    tools.reset_user_zone()  # le fuseau d'un utilisateur ne doit jamais servir à la requête suivante du même processus
+
+
 @app.errorhandler(accounts.AuthError)
 def handle_auth_error(exc):
     return jsonify(error=exc.message, code=exc.code), AUTH_STATUS.get(exc.code, 400)
@@ -116,11 +123,13 @@ def authenticate(data):
         if user is None:
             db.audit(None, "denied", None, {"reason": "compte Telegram inconnu ou desactive"})
             return None, (jsonify(error="non autorise"), 403)
+        tools.set_user_zone(user.get("timezone"))
         return user, None
 
     user = accounts.user_from_session(request.cookies.get(COOKIE_NAME))
     if user is None:
         return None, (jsonify(error="non authentifie"), 401)
+    tools.set_user_zone(user.get("timezone"))
     return user, None
 
 
@@ -409,7 +418,8 @@ def tasks_list():
         except tasks.TaskInputError as exc:
             return task_error(exc)
     items = db.list_tasks(user["id"], statuses)
-    return jsonify(tasks=[tasks.public(t) for t in items])
+    titles = db.event_titles(user["id"], [t["event_id"] for t in items])
+    return jsonify(tasks=[{**tasks.public(t), **({"event_title": titles[t["event_id"]]} if t["event_id"] in titles else {})} for t in items])
 
 
 @app.post("/tasks")
@@ -420,14 +430,17 @@ def tasks_create():
     data = body()
     try:
         if "text" in data:  # saisie rapide : « titre | échéance | priorité »
-            title, priority, due = tasks.parse_quick(data["text"])
+            title, priority, due, event_id = tasks.parse_quick_linked(data["text"])
         else:
             title = tasks.clean_title(data.get("title"))
             priority = tasks.clean_priority(data.get("priority", "normale"))
             due = tasks.parse_due(data["due"]) if data.get("due") else None
-        task = db.create_task(user["id"], title, priority, due)
+            event_id = tasks.link_target(data.get("event_id"))
+        task = db.create_task(user["id"], title, priority, due, event_id=event_id)
     except tasks.TaskInputError as exc:
         return task_error(exc)
+    except db.LinkedEventNotFound:
+        return jsonify(error="rendez-vous introuvable"), 404
     except db.TaskLimit as exc:
         return jsonify(error=f"limite de {exc.args[0]} tâches ouvertes atteinte"), 409
     db.audit(user["id"], "task_created", None, {"task_id": task["id"], "mode": "direct"})
@@ -450,11 +463,15 @@ def tasks_update(task_id):
             changes["status"] = tasks.clean_status(data["status"])
         if "due" in data:
             changes["due_at"] = tasks.parse_due(data["due"]) if data["due"] else None
+        if "event_id" in data:
+            changes["event_id"] = tasks.link_target(data["event_id"])
         if not changes:
             return jsonify(error="aucune modification demandée"), 400
         task = db.update_task(user["id"], task_id, **changes)
     except tasks.TaskInputError as exc:
         return task_error(exc)
+    except db.LinkedEventNotFound:
+        return jsonify(error="rendez-vous introuvable"), 404
     except db.TaskLimit as exc:
         return jsonify(error=f"limite de {exc.args[0]} tâches ouvertes atteinte"), 409
     if task is None:
@@ -484,13 +501,14 @@ def events_list():
     user, error = chat_auth()
     if error:
         return error
-    now = datetime.now(tasks.TZ)
+    now = datetime.now(tools.tz())
     try:
         start, days = agenda.parse_range(request.args.get("range"), now)
     except agenda.AgendaInputError as exc:
         return jsonify(error=str(exc)), 400
     items = db.list_events(user["id"], start, start + timedelta(days=days))
-    return jsonify(today=now.date().isoformat(), events=[agenda.public(e) for e in items])
+    linked = db.open_tasks_for_events(user["id"], [e["id"] for e in items])
+    return jsonify(today=now.date().isoformat(), events=[{**agenda.public(e), "tasks": linked.get(e["id"], [])} for e in items])
 
 
 @app.get("/events/<int:event_id>")
@@ -501,7 +519,8 @@ def events_get(event_id):
     event = db.get_event(user["id"], event_id)
     if event is None:
         return jsonify(error="rendez-vous introuvable"), 404
-    return jsonify(event=agenda.public(event))
+    linked = db.open_tasks_for_events(user["id"], [event_id])
+    return jsonify(event={**agenda.public(event), "tasks": linked.get(event_id, [])})
 
 
 @app.post("/events")
@@ -511,21 +530,30 @@ def events_create():
         return error
     data = body()
     try:
-        if "text" in data:  # « titre | quand | durée | lieu »
+        if "text" in data:  # « titre | quand | durée | lieu | répétition »
             fields = agenda.parse_event(data["text"])
         else:
             start = agenda.parse_start(data.get("start"))
+            rule = until = None
+            if str(data.get("repeat") or "").strip():
+                rule, until = agenda.parse_repeat(data["repeat"], start)
+            if str(data.get("until") or "").strip():
+                if rule is None:
+                    raise agenda.AgendaInputError("Indique la répétition (repeat) avant sa date de fin (until).")
+                until = agenda.parse_day(str(data["until"]).strip().lower(), datetime.now(tools.tz()).date())
+                agenda.check_series(start, rule, until)
             fields = {
                 "title": agenda.clean_title(data.get("title")), "start": start,
                 "end": start + agenda.parse_duration(data.get("duration")),
-                "location": agenda.clean_location(data.get("location")),
+                "location": agenda.clean_location(data.get("location")), "repeat": rule, "until": until,
             }
-        event = db.create_event(user["id"], fields["title"], fields["start"], fields["end"], fields["location"])
+        event = db.create_event(user["id"], fields["title"], fields["start"], fields["end"], fields["location"],
+                                recurrence=fields["repeat"], until=fields["until"], tz_name=tools.tz_name())
     except agenda.AgendaInputError as exc:
         return jsonify(error=str(exc)), 400
     except db.EventLimit as exc:
         return jsonify(error=f"Limite de {exc.args[0]} rendez-vous à venir atteinte."), 409
-    db.audit(user["id"], "event_created", None, {"event_id": event["id"]})
+    db.audit(user["id"], "event_created", None, {"event_id": event["id"], "repeat": event["recurrence"]})
     conflicts = db.find_conflicts(user["id"], event["start_at"], event["end_at"], exclude_id=event["id"])
     return jsonify(event_payload(event, conflicts)), 201
 
@@ -539,24 +567,11 @@ def events_update(event_id):
     current = db.get_event(user["id"], event_id)
     if current is None:
         return jsonify(error="rendez-vous introuvable"), 404
-    changes = {}
     try:
-        if "title" in data:
-            changes["title"] = agenda.clean_title(data["title"])
-        if "location" in data:
-            changes["location"] = agenda.clean_location(data["location"])
-        if "start" in data or "duration" in data:
-            start = agenda.parse_start(data["start"]) if "start" in data else current["start_at"]
-            if "duration" in data:
-                duration = agenda.parse_duration(data["duration"])
-            else:
-                duration = current["end_at"] - current["start_at"]
-            changes["start_at"], changes["end_at"] = start, start + duration
-        if not changes:
-            return jsonify(error="aucune modification demandée"), 400
+        changes = agenda.build_changes(current, data)
     except agenda.AgendaInputError as exc:
         return jsonify(error=str(exc)), 400
-    event = db.update_event(user["id"], event_id, **changes)
+    event = db.update_event(user["id"], event_id, tz_name=tools.tz_name(), **changes)
     db.audit(user["id"], "event_updated", None, {"event_id": event_id, "fields": sorted(changes)})
     conflicts = db.find_conflicts(user["id"], event["start_at"], event["end_at"], exclude_id=event_id)
     return jsonify(event_payload(event, conflicts))
@@ -564,9 +579,20 @@ def events_update(event_id):
 
 @app.delete("/events/<int:event_id>")
 def events_delete(event_id):
+    """Supprime un rendez-vous ; pour une série, `occurrence` (AAAA-MM-JJ) ne supprime que cette occurrence."""
     user, error = chat_auth()
     if error:
         return error
+    occurrence = body().get("occurrence")
+    if occurrence:
+        try:
+            day = datetime.strptime(str(occurrence), "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify(error="occurrence doit être une date AAAA-MM-JJ"), 400
+        if not db.skip_occurrence(user["id"], event_id, day):
+            return jsonify(error="occurrence introuvable"), 404
+        db.audit(user["id"], "event_updated", None, {"event_id": event_id, "skipped": day.isoformat()})
+        return jsonify(status="occurrence_deleted")
     if not db.delete_event(user["id"], event_id):
         return jsonify(error="rendez-vous introuvable"), 404
     db.audit(user["id"], "event_deleted", None, {"event_id": event_id})
@@ -578,12 +604,11 @@ def event_reminders_claim():
     """Rappels de rendez-vous dus, pour le bot Telegram uniquement. Chaque rappel n'est rendu qu'une fois."""
     if not service_token_valid(request.headers.get("X-Fox-Service-Token")):
         return jsonify(error="non authentifie"), 401
-    return jsonify(reminders=[
-        {"telegram_id": r["telegram_id"], "id": r["id"], "title": r["title"], "location": r["location"],
-         "start": r["start_at"].astimezone(tasks.TZ).isoformat(timespec="minutes"),
-         "end": r["end_at"].astimezone(tasks.TZ).isoformat(timespec="minutes")}
-        for r in db.claim_due_event_reminders(agenda.REMIND_MINUTES)
-    ])
+    reminders = []
+    for r in db.claim_due_event_reminders(agenda.REMIND_MINUTES):
+        with tools.user_zone(r["timezone"]):
+            reminders.append({"telegram_id": r["telegram_id"], **agenda.public(r), "tasks": r.get("tasks", [])})
+    return jsonify(reminders=reminders)
 
 
 # --- Clients et devis (phase C) ----------------------------------------------------
@@ -947,15 +972,53 @@ def briefings_claim():
     """Briefings dus, pour le bot Telegram uniquement. Chaque briefing n'est rendu qu'une fois par jour."""
     if not service_token_valid(request.headers.get("X-Fox-Service-Token")):
         return jsonify(error="non authentifie"), 401
-    now = datetime.now(tasks.TZ)
-    due = db.claim_due_briefings(now.date(), now.time().replace(microsecond=0))
+    due = db.claim_due_briefings(datetime.now(tools.TZ), tools.TZ_NAME)
     items = []
     for entry in due:
         try:
-            items.append({"telegram_id": entry["telegram_id"], "text": briefing.build(entry["user_id"], entry["role"], now)})
+            with tools.user_zone(entry["timezone"]):
+                items.append({"telegram_id": entry["telegram_id"],
+                              "text": briefing.build(entry["user_id"], entry["role"], datetime.now(tools.tz()))})
         except Exception:
             log.exception("echec de la construction du briefing")
     return jsonify(briefings=items)
+
+
+# --- Fuseau horaire ---------------------------------------------------------------
+def zone_payload(user):
+    name = user.get("timezone")
+    return {"timezone": tools.tz_name(), "default": tools.TZ_NAME, "custom": bool(name),
+            "now": datetime.now(tools.tz()).isoformat(timespec="minutes")}
+
+
+@app.get("/timezone")
+def timezone_get():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(zone_payload(user))
+
+
+@app.post("/timezone")
+def timezone_set():
+    user, error = chat_auth()
+    if error:
+        return error
+    value = body().get("timezone")
+    if not isinstance(value, str) or not value.strip():
+        return jsonify(error="timezone est requis (nom de fuseau ou « defaut »)"), 400
+    if timezones.fold(value) in ("defaut", "default", "auto"):
+        name = None
+    else:
+        try:
+            name = timezones.resolve(value)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+    db.set_user_timezone(user["id"], name)
+    db.audit(user["id"], "timezone_set", None, {"timezone": name})
+    user = {**user, "timezone": name}
+    tools.set_user_zone(name)
+    return jsonify(zone_payload(user))
 
 
 # --- E-mails ---------------------------------------------------------------------

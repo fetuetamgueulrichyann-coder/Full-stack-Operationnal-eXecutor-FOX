@@ -11,7 +11,7 @@ from datetime import datetime
 import agent
 import db
 import tasks
-from tools import TZ
+from tools import tz
 
 MAX_TASKS = 5
 SUBJECT_MAX = 200
@@ -108,7 +108,7 @@ def improve(role, text):
 def summarize(role, text, now=None):
     """Retourne ({"summary", "tasks": [{"title", "due"}]}, tokens). Les tâches sont des propositions."""
     text = clean_input(text, "Le mail")
-    now = now or datetime.now(TZ)
+    now = now or datetime.now(tz())
     raw, tokens = agent.complete(
         role, SYSTEM_SUMMARY, f"Date du jour : {now:%Y-%m-%d}\nE-mail à résumer :\n{wrap(text)}"
     )

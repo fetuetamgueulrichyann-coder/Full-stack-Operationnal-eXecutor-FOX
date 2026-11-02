@@ -30,6 +30,7 @@ from botlogic import (
     agenda_message,
     agenda_word,
     briefing_status,
+    timezone_message,
     business_command,
     business_message,
     client_command,
@@ -85,13 +86,14 @@ HELP = (
     "/effacer : supprimer une conversation ou tout l'historique\n"
     "/prive : mode « ne pas enregistrer » (rien n'est conservé)\n"
     "/taches : voir tes tâches en cours\n"
-    "/tache titre | échéance | priorité : ajouter une tâche (échéance et priorité facultatives)\n"
+    "/tache titre | échéance | priorité | rdv n° : ajouter une tâche (le reste est facultatif ; rdv n° la lie à un rendez-vous)\n"
     "/memoire : voir et supprimer ce que FOX retient sur toi\n"
     "/retiens phrase : demander à FOX de retenir une information\n"
     "/journal : voir ce que FOX a proposé et fait\n"
     "/briefing : briefing du matin (on, off, une heure comme 07:30, ou maintenant)\n"
     "/mail : rédiger, améliorer ou résumer un e-mail (rien n'est envoyé)\n"
     "/agenda : tes rendez-vous ; /rdv Titre | demain 14h | 1h | lieu pour en ajouter (tu es prévenu avant)\n"
+    "/fuseau : voir ou changer ton fuseau horaire (ex. /fuseau Paris)\n"
     "/clients : tes clients ; /client Nom pour une fiche, /client ajoute pour en créer\n"
     "/devis : tes devis ; /devis Client + lignes pour en créer (détails avec /devis aide)\n"
     "/entreprise : ton en-tête de devis (nom, contact, n° contribuable)\n"
@@ -113,6 +115,7 @@ COMMANDS = [
     BotCommand("client", "Fiche, ajout ou suppression d'un client"),
     BotCommand("devis", "Mes devis, créer un devis"),
     BotCommand("agenda", "Mon agenda"),
+    BotCommand("fuseau", "Mon fuseau horaire"),
     BotCommand("rdv", "Ajouter un rendez-vous"),
     BotCommand("entreprise", "En-tête de mes devis"),
     BotCommand("annuler", "Annuler la dernière action"),
@@ -805,8 +808,11 @@ async def event_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text(event_created_message(response.json()))
 
 
+EVENT_BUTTON_PATTERN = r"^(evdel:[0-9]{1,18}(:[0-9]{8})?|evok:[0-9]{1,18}|evskip:[0-9]{1,18}:[0-9]{8}|evno)$"
+
+
 async def on_event_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Suppression d'un rendez-vous : bouton « Supprimer n », puis confirmation (Oui / Non)."""
+    """Suppression d'un rendez-vous : « Supprimer n », puis confirmation. Pour une série : cette occurrence ou toute la série."""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -817,9 +823,16 @@ async def on_event_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if unknown(context).is_quiet(user_id):
         await query.message.reply_text(NO_ACCOUNT)
         return
-    method, path = ("GET", f"/events/{int(value)}") if action == "evdel" else ("DELETE", f"/events/{int(value)}")
+    event_id, _, day = value.partition(":")
+    iso_day = f"{day[:4]}-{day[4:6]}-{day[6:8]}" if len(day) == 8 else None
+    if action == "evdel":
+        method, path, payload = "GET", f"/events/{int(event_id)}", None
+    elif action == "evskip" and iso_day:
+        method, path, payload = "DELETE", f"/events/{int(event_id)}", {"occurrence": iso_day}
+    else:  # evok : le rendez-vous, ou toute la série
+        method, path, payload = "DELETE", f"/events/{int(event_id)}", None
     try:
-        response = await call(context, method, path, user_id)
+        response = await call(context, method, path, user_id, payload)
     except httpx.HTTPError:
         log.exception("echec de la requete vers l'orchestrateur")
         await query.message.reply_text(UNAVAILABLE)
@@ -833,12 +846,39 @@ async def on_event_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.message.reply_text(UNAVAILABLE)
     elif action == "evdel":
         event = response.json()["event"]
-        await query.message.reply_text(
-            f"Supprimer « {event['title']} » ?",
-            reply_markup=keyboard([[("Oui, supprimer", f"evok:{event['id']}"), ("Non", "evno")]]),
-        )
+        if event.get("repeat") and iso_day:
+            await query.message.reply_text(
+                f"« {event['title']} » se répète ({event['repeat']}). Que supprimer ?",
+                reply_markup=keyboard([
+                    [(f"Seulement le {iso_day[8:10]}/{iso_day[5:7]}", f"evskip:{event['id']}:{day}")],
+                    [("Toute la série", f"evok:{event['id']}")],
+                    [("Non", "evno")],
+                ]),
+            )
+        else:
+            await query.message.reply_text(
+                f"Supprimer « {event['title']} » ?",
+                reply_markup=keyboard([[("Oui, supprimer", f"evok:{event['id']}"), ("Non", "evno")]]),
+            )
+    elif action == "evskip":
+        await query.edit_message_text("Occurrence supprimée. /agenda pour la liste à jour.")
     else:
         await query.edit_message_text("Rendez-vous supprimé. /agenda pour la liste à jour.")
+
+
+async def timezone_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    text = command_rest(message.text)
+    if text:
+        response = await commercial_call(update, context, "POST", "/timezone", {"timezone": text})
+    else:
+        response = await commercial_call(update, context, "GET", "/timezone")
+    if response is None:
+        return
+    if response.status_code >= 400:
+        await message.reply_text(refusal(response, "Demande refusée."))
+        return
+    await message.reply_text(timezone_message(response.json(), changed=bool(text)))
 
 
 async def briefing_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1134,6 +1174,7 @@ def main() -> None:
         ("client", client_cmd),
         ("devis", quote_cmd),
         ("agenda", agenda_cmd),
+        ("fuseau", timezone_cmd),
         ("rdv", event_cmd),
         ("entreprise", business_cmd),
         ("annuler", undo_command),
@@ -1143,7 +1184,7 @@ def main() -> None:
         CallbackQueryHandler(on_decision, pattern=r"^(ok|no):[0-9a-fA-F-]{36}$")
     )
     application.add_handler(CallbackQueryHandler(on_memory_button, pattern=r"^(mdel:[0-9]{1,18}|mall|mall_ok)$"))
-    application.add_handler(CallbackQueryHandler(on_event_button, pattern=r"^(evdel:[0-9]{1,18}|evok:[0-9]{1,18}|evno)$"))
+    application.add_handler(CallbackQueryHandler(on_event_button, pattern=EVENT_BUTTON_PATTERN))
     application.add_handler(CallbackQueryHandler(on_quote_extra_button, pattern=r"^q[pm]:DV-[0-9]{4}-[0-9]{3,6}$"))
     application.add_handler(CallbackQueryHandler(on_quote_button, pattern=r"^qs:DV-[0-9]{4}-[0-9]{3,6}:[ear]$"))
     application.add_handler(CallbackQueryHandler(on_task_button, pattern=r"^(tdone|tcancel):[0-9]{1,18}$"))

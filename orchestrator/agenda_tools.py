@@ -8,50 +8,51 @@ from datetime import datetime, timedelta
 
 import agenda
 import db
-from tools import DATE_HELP, IRREVERSIBLE, READ, TZ, WRITE, Tool, register
+from tools import DATE_HELP, IRREVERSIBLE, READ, Tool, WRITE, register, tz, tz_name
 
 NO_LOCATION = ("aucun", "aucune", "")
 
 
 def human(event):
-    start = event["start_at"].astimezone(TZ)
-    end = event["end_at"].astimezone(TZ)
+    start = event["start_at"].astimezone(tz())
+    end = event["end_at"].astimezone(tz())
     return f"{start:%d/%m/%Y %H:%M}-{end:%H:%M}"
 
 
 def lister_rdv(user_id, periode=None):
-    now = datetime.now(TZ)
+    now = datetime.now(tz())
     start, days = agenda.parse_range(periode, now)
     events = db.list_events(user_id, start, start + timedelta(days=days))
     return [agenda.public(e) for e in events[:30]]
 
 
-def creer_rdv(user_id, titre, debut, duree=None, lieu=None):
+def creer_rdv(user_id, titre, debut, duree=None, lieu=None, repetition=None):
     start = agenda.parse_start(debut)
+    rule, until = agenda.parse_repeat(repetition, start) if str(repetition or "").strip() else (None, None)
     event = db.create_event(
-        user_id, agenda.clean_title(titre), start, start + agenda.parse_duration(duree), agenda.clean_location(lieu)
+        user_id, agenda.clean_title(titre), start, start + agenda.parse_duration(duree), agenda.clean_location(lieu),
+        recurrence=rule, until=until, tz_name=tz_name(),
     )
     conflicts = db.find_conflicts(user_id, event["start_at"], event["end_at"], exclude_id=event["id"])
-    db.audit(user_id, "event_created", None, {"event_id": event["id"], "source": "ia"})
+    db.audit(user_id, "event_created", None, {"event_id": event["id"], "source": "ia", "repeat": rule})
     return {"id": event["id"], "user_id": user_id, "conflits": [c["title"] for c in conflicts]}
 
 
-def modifier_rdv(user_id, rdv_id, titre=None, debut=None, duree=None, lieu=None):
+def changes_from(args):
+    """Arguments de l'outil modifier_rdv -> demandes de modification (voir agenda.build_changes)."""
+    names = {"titre": "title", "debut": "start", "duree": "duration", "repetition": "repeat", "jusqu_au": "until"}
+    data = {names[k]: args[k] for k in names if args.get(k) is not None}
+    if args.get("lieu") is not None:
+        data["location"] = "" if str(args["lieu"]).strip().lower() in NO_LOCATION else args["lieu"]
+    return data
+
+
+def modifier_rdv(user_id, rdv_id, **args):
     current = db.get_event(user_id, int(rdv_id))
     if current is None:
         raise agenda.AgendaInputError("rendez-vous introuvable")
-    changes = {}
-    if titre is not None:
-        changes["title"] = agenda.clean_title(titre)
-    if lieu is not None:
-        changes["location"] = None if str(lieu).strip().lower() in NO_LOCATION else agenda.clean_location(lieu)
-    if debut is not None or duree is not None:
-        start = agenda.parse_start(debut) if debut is not None else current["start_at"]
-        length = agenda.parse_duration(duree) if duree is not None else current["end_at"] - current["start_at"]
-        changes["start_at"], changes["end_at"] = start, start + length
-    if not changes:
-        raise agenda.AgendaInputError("aucune modification demandée")
-    event = db.update_event(user_id, int(rdv_id), **changes)
+    changes = agenda.build_changes(current, changes_from(args))
+    event = db.update_event(user_id, int(rdv_id), tz_name=tz_name(), **changes)
     if event is None:
         raise agenda.AgendaInputError("rendez-vous introuvable")
     conflicts = db.find_conflicts(user_id, event["start_at"], event["end_at"], exclude_id=event["id"])
@@ -59,7 +60,16 @@ def modifier_rdv(user_id, rdv_id, titre=None, debut=None, duree=None, lieu=None)
     return {"id": event["id"], "conflits": [c["title"] for c in conflicts]}
 
 
-def supprimer_rdv(user_id, rdv_id):
+def occurrence_day(value):
+    return agenda.parse_day(str(value).strip().lower(), datetime.now(tz()).date())
+
+
+def supprimer_rdv(user_id, rdv_id, occurrence=None):
+    if occurrence:
+        if not db.skip_occurrence(user_id, int(rdv_id), occurrence_day(occurrence)):
+            raise agenda.AgendaInputError("occurrence introuvable (ce rendez-vous est-il une série, à cette date ?)")
+        db.audit(user_id, "event_updated", None, {"event_id": int(rdv_id), "skipped": str(occurrence), "source": "ia"})
+        return {"id": int(rdv_id), "occurrence": str(occurrence)}
     if not db.delete_event(user_id, int(rdv_id)):
         raise agenda.AgendaInputError("rendez-vous introuvable")
     db.audit(user_id, "event_deleted", None, {"event_id": int(rdv_id), "source": "ia"})
@@ -73,9 +83,12 @@ def describe_creer(args, user_id):
     place = agenda.clean_location(args.get("lieu"))
     if place:
         lines.append(f"Lieu : {place}")
+    if str(args.get("repetition") or "").strip():
+        rule, until = agenda.parse_repeat(args["repetition"], start)
+        lines.append(f"Répétition : {agenda.repeat_label(rule, until)}")
     conflicts = db.find_conflicts(user_id, start, end)
     if conflicts:
-        lines.append("Attention, chevauche : " + ", ".join(c["title"] for c in conflicts))
+        lines.append("Attention, chevauche : " + ", ".join(sorted({c["title"] for c in conflicts})))
     return "\n".join(lines)
 
 
@@ -83,18 +96,22 @@ def describe_modifier(args, user_id):
     event = db.get_event(user_id, int(args["rdv_id"]))
     if event is None:
         raise agenda.AgendaInputError("rendez-vous introuvable")
-    lines = [f"Modifier le rendez-vous « {event['title']} » ({human(event)})"]
-    if args.get("titre"):
-        lines.append(f"Nouveau titre : « {agenda.clean_title(args['titre'])} »")
-    if args.get("debut"):
-        lines.append(f"Nouveau début : {agenda.parse_start(args['debut']):%d/%m/%Y %H:%M}")
-    if args.get("duree"):
-        agenda.parse_duration(args["duree"])
-        lines.append(f"Nouvelle durée : {args['duree']}")
-    if args.get("lieu") is not None:
-        lines.append("Lieu supprimé" if str(args["lieu"]).strip().lower() in NO_LOCATION else f"Nouveau lieu : {agenda.clean_location(args['lieu'])}")
-    if len(lines) == 1:
-        raise agenda.AgendaInputError("aucune modification demandée")
+    changes = agenda.build_changes(event, changes_from(args))  # valide la demande dès la proposition
+    suffix = f" ({agenda.repeat_label(event['recurrence'], event['recurrence_until'])})" if event["recurrence"] else ""
+    lines = [f"Modifier le rendez-vous « {event['title']} » ({human(event)}){suffix}"]
+    if "title" in changes:
+        lines.append(f"Nouveau titre : « {changes['title']} »")
+    if "start_at" in changes:
+        what = "Nouveau premier rendez-vous" if event["recurrence"] else "Nouveau début"
+        lines.append(f"{what} : {changes['start_at'].astimezone(tz()):%d/%m/%Y %H:%M}")
+        lines.append(f"Durée : {(changes['end_at'] - changes['start_at']).total_seconds() / 3600:g} h")
+    if "location" in changes:
+        lines.append(f"Nouveau lieu : {changes['location']}" if changes["location"] else "Lieu supprimé")
+    if "recurrence" in changes:
+        label = agenda.repeat_label(changes["recurrence"], changes.get("until"))
+        lines.append(f"Répétition : {label}" if label else "Répétition arrêtée")
+    elif "until" in changes:
+        lines.append(f"Fin de la répétition : {changes['until']:%d/%m/%Y}" if changes["until"] else "Répétition sans fin")
     return "\n".join(lines)
 
 
@@ -102,6 +119,12 @@ def describe_supprimer(args, user_id):
     event = db.get_event(user_id, int(args["rdv_id"]))
     if event is None:
         raise agenda.AgendaInputError("rendez-vous introuvable")
+    if args.get("occurrence"):
+        if not event["recurrence"]:
+            raise agenda.AgendaInputError("ce rendez-vous n'est pas une série")
+        return f"Supprimer uniquement l'occurrence du {occurrence_day(args['occurrence']):%d/%m/%Y} de « {event['title']} »"
+    if event["recurrence"]:
+        return f"Supprimer TOUTE la série « {event['title']} » ({agenda.repeat_label(event['recurrence'], event['recurrence_until'])})"
     return f"Supprimer le rendez-vous « {event['title']} » ({human(event)})"
 
 
@@ -124,6 +147,7 @@ def done_modifier(result):
 
 
 RDV_ID = {"type": "INTEGER", "description": "Numéro du rendez-vous, tel que retourné par lister_rdv"}
+REPEAT_HELP = "chaque jour, jours ouvrés, chaque semaine ou chaque mois, éventuellement suivi de « jusqu'au JJ/MM/AAAA »"
 INTERNAL = "dans l'agenda interne de FOX (avec rappel Telegram avant l'heure)"
 
 
@@ -144,6 +168,7 @@ def register_agenda_tools():
             "debut": {"type": "STRING", "description": DATE_HELP.replace("Date ou date-heure", "Date et heure")},
             "duree": {"type": "STRING", "description": "Durée, par exemple 1h30 ou 45 min (facultatif, 1 h par défaut)"},
             "lieu": {"type": "STRING", "description": "Lieu (facultatif)"},
+            "repetition": {"type": "STRING", "description": REPEAT_HELP + " (facultatif ; sans répétition, le rendez-vous est unique)"},
         }, "required": ["titre", "debut"]},
         classification=WRITE, run=creer_rdv, describe=describe_creer, done=done_creer, undo=undo_creer, needs_user=True,
     ))
@@ -156,13 +181,18 @@ def register_agenda_tools():
             "debut": {"type": "STRING", "description": "Nouveau début (même format que creer_rdv)"},
             "duree": {"type": "STRING", "description": "Nouvelle durée, par exemple 1h30"},
             "lieu": {"type": "STRING", "description": "Nouveau lieu, ou « aucun » pour l'effacer"},
+            "repetition": {"type": "STRING", "description": REPEAT_HELP + ", ou « aucune » pour arrêter la répétition"},
+            "jusqu_au": {"type": "STRING", "description": "Nouvelle date de fin de la répétition (JJ/MM/AAAA), ou « aucune »"},
         }, "required": ["rdv_id"]},
         classification=WRITE, run=modifier_rdv, describe=describe_modifier, done=done_modifier, needs_user=True,
     ))
     register(Tool(
         name="supprimer_rdv",
         description=f"Supprime un rendez-vous {INTERNAL}. Retrouver d'abord son numéro avec lister_rdv.",
-        parameters={"type": "OBJECT", "properties": {"rdv_id": RDV_ID}, "required": ["rdv_id"]},
+        parameters={"type": "OBJECT", "properties": {
+            "rdv_id": RDV_ID,
+            "occurrence": {"type": "STRING", "description": "Pour une série : date (AAAA-MM-JJ) de la seule occurrence à supprimer. Sans cette date, toute la série est supprimée."},
+        }, "required": ["rdv_id"]},
         classification=IRREVERSIBLE, run=supprimer_rdv, describe=describe_supprimer,
         done=lambda result: "Rendez-vous supprimé.", needs_user=True,
     ))

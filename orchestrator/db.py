@@ -1,6 +1,7 @@
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
@@ -360,7 +361,7 @@ class TaskLimit(Exception):
 
 _TASK_COLUMNS = (
     "id, title, priority, due_at, status, created_at, updated_at, done_at, "
-    "(due_at IS NOT NULL AND due_at < now() AND status IN ('a_faire', 'en_cours'))"
+    "(due_at IS NOT NULL AND due_at < now() AND status IN ('a_faire', 'en_cours')), event_id"
 )
 
 
@@ -368,7 +369,46 @@ def _task(row):
     return {
         "id": row[0], "title": row[1], "priority": row[2], "due_at": row[3], "status": row[4],
         "created_at": row[5], "updated_at": row[6], "done_at": row[7], "overdue": bool(row[8]),
+        "event_id": row[9],
     }
+
+
+class LinkedEventNotFound(Exception):
+    """Le rendez-vous auquel on veut lier une tâche n'existe pas (ou n'appartient pas à cet utilisateur)."""
+
+
+def _check_event_owner(cur, user_id, event_id):
+    cur.execute("SELECT 1 FROM events WHERE id = %s AND user_id = %s", (event_id, user_id))
+    if cur.fetchone() is None:
+        raise LinkedEventNotFound(event_id)
+
+
+def event_titles(user_id, ids):
+    """{id: titre} des rendez-vous de cet utilisateur parmi `ids`."""
+    ids = list({i for i in ids if i is not None})
+    if not ids:
+        return {}
+    with cursor() as cur:
+        cur.execute("SELECT id, title FROM events WHERE user_id = %s AND id = ANY(%s)", (user_id, ids))
+        return dict(cur.fetchall())
+
+
+def open_tasks_for_events(user_id, ids, limit_per_event=5):
+    """{id de rendez-vous: [{"id", "title"}]} : tâches ouvertes de cet utilisateur liées à ces rendez-vous."""
+    ids = list({i for i in ids if i is not None})
+    if not ids:
+        return {}
+    with cursor() as cur:
+        cur.execute(
+            "SELECT event_id, id, title FROM tasks WHERE user_id = %s AND event_id = ANY(%s) "
+            "AND status IN ('a_faire', 'en_cours') ORDER BY (due_at IS NULL), due_at, id",
+            (user_id, ids),
+        )
+        found = {}
+        for event_id, task_id, title in cur.fetchall():
+            if len(found.setdefault(event_id, [])) < limit_per_event:
+                found[event_id].append({"id": task_id, "title": title})
+        return found
 
 
 def _lock_tasks(cur, user_id):
@@ -388,16 +428,18 @@ def has_time(due_at):
     return due_at is not None and (due_at.hour, due_at.minute, due_at.second) != (23, 59, 59)
 
 
-def create_task(user_id, title, priority="normale", due_at=None, max_open=None):
+def create_task(user_id, title, priority="normale", due_at=None, max_open=None, event_id=None):
     max_open = MAX_OPEN_TASKS if max_open is None else max_open
     with cursor() as cur:
         _lock_tasks(cur, user_id)
         if max_open and _open_count(cur, user_id) >= max_open:
             raise TaskLimit(max_open)
+        if event_id is not None:
+            _check_event_owner(cur, user_id, event_id)
         cur.execute(
-            f"INSERT INTO tasks (user_id, title, priority, due_at, due_time) VALUES (%s, %s, %s, %s, %s) "
+            f"INSERT INTO tasks (user_id, title, priority, due_at, due_time, event_id) VALUES (%s, %s, %s, %s, %s, %s) "
             f"RETURNING {_TASK_COLUMNS}",  # noqa: S608 (colonnes fixes)
-            (user_id, title, priority, due_at, has_time(due_at)),
+            (user_id, title, priority, due_at, has_time(due_at), event_id),
         )
         return _task(cur.fetchone())
 
@@ -430,8 +472,9 @@ def get_task(user_id, task_id):
     return _task(row) if row else None
 
 
-def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, status=None, max_open=None):
-    """Modifie une tâche de cet utilisateur. due_at=None efface l'échéance. None si introuvable."""
+def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, status=None, max_open=None, event_id=_UNSET):
+    """Modifie une tâche de cet utilisateur. due_at=None efface l'échéance, event_id=None détache la tâche de son rendez-vous.
+    None si introuvable."""
     max_open = MAX_OPEN_TASKS if max_open is None else max_open
     with cursor() as cur:
         _lock_tasks(cur, user_id)
@@ -455,6 +498,11 @@ def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, stat
             sets.append("due_time = %s")
             values.append(has_time(due_at))
             sets.append("reminded_at = NULL")  # nouvelle échéance : nouveau rappel
+        if event_id is not _UNSET:
+            if event_id is not None:
+                _check_event_owner(cur, user_id, event_id)
+            sets.append("event_id = %s")
+            values.append(event_id)
         if status is not None:
             sets.append("status = %s")
             values.append(status)
@@ -615,27 +663,44 @@ def set_briefing(user_id, enabled=None, send_time=None, today=None):
     return get_briefing(user_id)
 
 
-def claim_due_briefings(local_date, local_time, limit=20):
-    """Utilisateurs dont le briefing est dû (heure atteinte, pas encore envoyé aujourd'hui).
+def claim_due_briefings(at, default_tz, limit=20):
+    """Utilisateurs dont le briefing est dû (heure atteinte, pas encore envoyé aujourd'hui), chacun selon SON fuseau.
 
-    Chaque briefing n'est retourné qu'une fois par jour : le jour d'envoi est enregistré dans la même opération.
+    `at` : instant courant (datetime avec fuseau). Chaque briefing n'est retourné qu'une fois par jour local :
+    le jour d'envoi est enregistré dans la même opération.
     """
+    local = "(%s::timestamptz AT TIME ZONE COALESCE(u2.timezone, %s))"
     with cursor() as cur:
         cur.execute(
-            """
-            UPDATE briefing_settings b SET last_sent_on = %s
-            FROM users u
-            WHERE b.user_id IN (
-                    SELECT user_id FROM briefing_settings
-                    WHERE enabled AND last_sent_on IS DISTINCT FROM %s
-                      AND send_time <= %s AND %s - send_time <= make_interval(hours => %s)
-                    ORDER BY send_time LIMIT %s FOR UPDATE SKIP LOCKED)
-              AND u.id = b.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
-            RETURNING u.id, u.telegram_id, u.role
-            """,
-            (local_date, local_date, local_time, local_time, BRIEFING_WINDOW_HOURS, limit),
+            f"""
+            UPDATE briefing_settings b SET last_sent_on = due.day
+            FROM (SELECT b2.user_id, {local}::date AS day
+                  FROM briefing_settings b2 JOIN users u2 ON u2.id = b2.user_id
+                  WHERE b2.enabled AND u2.telegram_id IS NOT NULL AND u2.disabled_at IS NULL
+                    AND b2.last_sent_on IS DISTINCT FROM {local}::date
+                    AND b2.send_time <= {local}::time
+                    AND {local}::time - b2.send_time <= make_interval(hours => %s)
+                  ORDER BY b2.send_time LIMIT %s FOR UPDATE OF b2 SKIP LOCKED) due,
+                 users u
+            WHERE b.user_id = due.user_id AND u.id = due.user_id
+            RETURNING u.id, u.telegram_id, u.role, u.timezone
+            """,  # noqa: S608 (fragment SQL fixe)
+            (at, default_tz, at, default_tz, at, default_tz, at, default_tz, BRIEFING_WINDOW_HOURS, limit),
         )
-        return [{"user_id": r[0], "telegram_id": r[1], "role": r[2]} for r in cur.fetchall()]
+        return [{"user_id": r[0], "telegram_id": r[1], "role": r[2], "timezone": r[3]} for r in cur.fetchall()]
+
+
+def get_user_timezone(user_id):
+    with cursor() as cur:
+        cur.execute("SELECT timezone FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def set_user_timezone(user_id, name):
+    """Enregistre le fuseau (nom IANA déjà validé) ; None revient au fuseau par défaut de FOX."""
+    with cursor() as cur:
+        cur.execute("UPDATE users SET timezone = %s WHERE id = %s", (name, user_id))
 
 
 # --- Journal des actions -------------------------------------------------------
@@ -643,7 +708,7 @@ JOURNAL_AUDIT_EVENTS = (
     "task_created", "task_updated", "task_deleted", "memory_added", "memory_deleted",
     "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
     "client_created", "client_updated", "client_deleted", "quote_created", "quote_status", "quote_deleted",
-    "quote_pdf", "business_updated", "event_created", "event_updated", "event_deleted",
+    "quote_pdf", "business_updated", "event_created", "event_updated", "event_deleted", "timezone_set",
 )
 
 
@@ -1079,13 +1144,17 @@ class EventLimit(Exception):
     """Trop de rendez-vous à venir pour cet utilisateur."""
 
 
-_EVENT_COLUMNS = "id, title, start_at, end_at, location, created_at, updated_at"
+_EVENT_COLUMNS = (
+    "id, title, start_at, end_at, location, created_at, updated_at, "
+    "recurrence, recurrence_until, skipped_days, series_tz"
+)
 
 
 def _event(row):
     return {
         "id": row[0], "title": row[1], "start_at": row[2], "end_at": row[3], "location": row[4],
         "created_at": row[5], "updated_at": row[6],
+        "recurrence": row[7], "recurrence_until": row[8], "skipped_days": row[9] or [], "series_tz": row[10],
     }
 
 
@@ -1093,41 +1162,57 @@ def _lock_events(cur, user_id):
     cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"events:{user_id}",))
 
 
-def create_event(user_id, title, start_at, end_at, location=None, max_upcoming=None):
+def create_event(user_id, title, start_at, end_at, location=None, max_upcoming=None,
+                 recurrence=None, until=None, tz_name=None):
+    """Crée un rendez-vous (ou une série : `recurrence` daily|weekdays|weekly|monthly, `until` dernier jour inclus)."""
     max_upcoming = MAX_UPCOMING_EVENTS if max_upcoming is None else max_upcoming
     with cursor() as cur:
         _lock_events(cur, user_id)
-        cur.execute("SELECT count(*) FROM events WHERE user_id = %s AND end_at > now()", (user_id,))
+        cur.execute(
+            "SELECT count(*) FROM events WHERE user_id = %s AND (end_at > now() OR "
+            "(recurrence IS NOT NULL AND (recurrence_until IS NULL OR recurrence_until >= current_date - 1)))",
+            (user_id,),
+        )
         if max_upcoming and cur.fetchone()[0] >= max_upcoming:
             raise EventLimit(max_upcoming)
         cur.execute(
-            f"INSERT INTO events (user_id, title, start_at, end_at, location) VALUES (%s, %s, %s, %s, %s) "  # noqa: S608
-            f"RETURNING {_EVENT_COLUMNS}",
-            (user_id, title, start_at, end_at, location),
+            f"INSERT INTO events (user_id, title, start_at, end_at, location, recurrence, recurrence_until, series_tz) "  # noqa: S608
+            f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING {_EVENT_COLUMNS}",
+            (user_id, title, start_at, end_at, location, recurrence, until, tz_name if recurrence else None),
         )
         return _event(cur.fetchone())
 
 
 def list_events(user_id, start, end, limit=100):
-    """Rendez-vous qui touchent la période [start, end[, dans l'ordre chronologique."""
+    """Rendez-vous qui touchent la période [start, end[, dans l'ordre chronologique.
+
+    Une série apparaît une fois par occurrence (même `id`, `occurrence` = jour local de l'occurrence)."""
     with cursor() as cur:
         cur.execute(
-            f"SELECT {_EVENT_COLUMNS} FROM events WHERE user_id = %s AND start_at < %s AND end_at > %s "  # noqa: S608
-            "ORDER BY start_at, id LIMIT %s",
+            f"SELECT {_EVENT_COLUMNS} FROM events WHERE user_id = %s AND recurrence IS NULL "  # noqa: S608
+            "AND start_at < %s AND end_at > %s ORDER BY start_at, id LIMIT %s",
             (user_id, end, start, limit),
         )
-        return [_event(r) for r in cur.fetchall()]
+        items = [_event(r) for r in cur.fetchall()]
+        cur.execute(
+            f"SELECT {_EVENT_COLUMNS} FROM events WHERE user_id = %s AND recurrence IS NOT NULL "  # noqa: S608
+            "AND start_at < %s AND (recurrence_until IS NULL OR recurrence_until >= (%s::timestamptz - interval '2 days')::date) "
+            "ORDER BY start_at, id LIMIT %s",
+            (user_id, end, start, MAX_UPCOMING_EVENTS or 200),
+        )
+        series = [_event(r) for r in cur.fetchall()]
+    import agenda  # import local : agenda dépend de tools, pas de db
+
+    for event in series:
+        items.extend(agenda.occurrences(event, start, end))
+    items.sort(key=lambda e: (e["start_at"], e["id"]))
+    return items[:limit]
 
 
 def find_conflicts(user_id, start, end, exclude_id=None):
-    """Rendez-vous de cet utilisateur qui chevauchent [start, end[ (un rendez-vous qui finit quand l'autre commence ne chevauche pas)."""
-    with cursor() as cur:
-        cur.execute(
-            f"SELECT {_EVENT_COLUMNS} FROM events WHERE user_id = %s AND start_at < %s AND end_at > %s "  # noqa: S608
-            "AND (%s::bigint IS NULL OR id <> %s) ORDER BY start_at, id",
-            (user_id, end, start, exclude_id, exclude_id),
-        )
-        return [_event(r) for r in cur.fetchall()]
+    """Rendez-vous (et occurrences de séries) de cet utilisateur qui chevauchent [start, end[ (un rendez-vous qui finit
+    quand l'autre commence ne chevauche pas). `exclude_id` écarte un rendez-vous ou toute une série."""
+    return [e for e in list_events(user_id, start, end, limit=50) if exclude_id is None or e["id"] != exclude_id]
 
 
 def get_event(user_id, event_id):
@@ -1140,31 +1225,75 @@ def get_event(user_id, event_id):
     return _event(row) if row else None
 
 
-def update_event(user_id, event_id, title=None, start_at=None, end_at=None, location=_UNSET):
-    """Modifie un rendez-vous de cet utilisateur (location=None efface le lieu). None si introuvable.
+def update_event(user_id, event_id, title=None, start_at=None, end_at=None, location=_UNSET,
+                 recurrence=_UNSET, until=_UNSET, tz_name=None):
+    """Modifie un rendez-vous de cet utilisateur (location=None efface le lieu ; recurrence=None arrête la répétition
+    et efface ses réglages). None si introuvable.
 
-    Un changement d'horaire remet le rappel à zéro.
+    Un changement d'horaire ou de répétition remet le rappel à zéro. Pour une série, start_at/end_at sont ceux de la
+    première occurrence, interprétés dans le fuseau `tz_name`.
     """
     with cursor() as cur:
         _lock_events(cur, user_id)
-        cur.execute("SELECT start_at, end_at FROM events WHERE id = %s AND user_id = %s FOR UPDATE", (event_id, user_id))
+        cur.execute(
+            "SELECT start_at, end_at, recurrence FROM events WHERE id = %s AND user_id = %s FOR UPDATE", (event_id, user_id)
+        )
         current = cur.fetchone()
         if current is None:
             return None
         new_start = current[0] if start_at is None else start_at
         new_end = current[1] if end_at is None else end_at
         moved = (new_start, new_end) != (current[0], current[1])
+        sets = ["title = COALESCE(%s, title)", "start_at = %s", "end_at = %s", "updated_at = now()"]
+        values = [title, new_start, new_end]
+        if location is not _UNSET:
+            sets.append("location = %s")
+            values.append(location)
+        new_rule = current[2]
+        if recurrence is not _UNSET:
+            new_rule = recurrence
+            sets.append("recurrence = %s")
+            values.append(recurrence)
+            if recurrence is None:
+                sets += ["recurrence_until = NULL", "skipped_days = '{}'", "series_tz = NULL"]
+            else:
+                if current[2] != recurrence:
+                    sets.append("skipped_days = '{}'")
+                sets.append("series_tz = COALESCE(%s, series_tz)")
+                values.append(tz_name)
+        elif moved and current[2] and tz_name:
+            sets.append("series_tz = %s")
+            values.append(tz_name)
+        if until is not _UNSET and new_rule:
+            sets.append("recurrence_until = %s")
+            values.append(until)
+        if moved or recurrence is not _UNSET or until is not _UNSET:
+            sets += ["reminded_at = NULL", "reminded_for = NULL"]
         cur.execute(
-            f"""
-            UPDATE events SET title = COALESCE(%s, title), start_at = %s, end_at = %s,
-                   location = CASE WHEN %s THEN location ELSE %s END,
-                   reminded_at = CASE WHEN %s THEN NULL ELSE reminded_at END, updated_at = now()
-            WHERE id = %s AND user_id = %s RETURNING {_EVENT_COLUMNS}
-            """,  # noqa: S608 (colonnes fixes)
-            (title, new_start, new_end, location is _UNSET, None if location is _UNSET else location,
-             moved, event_id, user_id),
+            f"UPDATE events SET {', '.join(sets)} WHERE id = %s AND user_id = %s RETURNING {_EVENT_COLUMNS}",  # noqa: S608
+            (*values, event_id, user_id),
         )
         return _event(cur.fetchone())
+
+
+def skip_occurrence(user_id, event_id, day):
+    """Supprime UNE occurrence d'une série (jour local, objet date). False si ce jour n'est pas une occurrence."""
+    import agenda
+    from tools import TZ, valid_zone
+
+    with cursor() as cur:
+        _lock_events(cur, user_id)
+        cur.execute(f"SELECT {_EVENT_COLUMNS} FROM events WHERE id = %s AND user_id = %s FOR UPDATE", (event_id, user_id))  # noqa: S608
+        row = cur.fetchone()
+        if row is None or row[7] is None:
+            return False
+        event = _event(row)
+        zone = valid_zone(event["series_tz"]) or TZ
+        begin = datetime(day.year, day.month, day.day, tzinfo=zone)
+        if not agenda.occurrences(event, begin, begin + timedelta(days=1)):
+            return False
+        cur.execute("UPDATE events SET skipped_days = array_append(skipped_days, %s) WHERE id = %s", (day, event_id))
+        return True
 
 
 def delete_event(user_id, event_id):
@@ -1179,14 +1308,21 @@ def purge_old_events(days=None):
     if not days or days <= 0:
         return 0
     with cursor() as cur:
-        cur.execute("DELETE FROM events WHERE end_at < now() - make_interval(days => %s)", (days,))
+        cur.execute(
+            "DELETE FROM events WHERE (recurrence IS NULL AND end_at < now() - make_interval(days => %s)) "
+            "OR (recurrence IS NOT NULL AND recurrence_until IS NOT NULL "
+            "AND recurrence_until < (now() - make_interval(days => %s))::date)",
+            (days, days),
+        )
         return cur.rowcount
 
 
 def claim_due_event_reminders(lead_minutes, limit=20):
     """Rendez-vous à rappeler maintenant : l'heure de rappel (début moins `lead_minutes`) est passée, le rendez-vous
     n'a pas commencé depuis plus de 10 minutes, et le rendez-vous existait déjà avant cette heure de rappel
-    (créer un rendez-vous pour dans 10 minutes ne déclenche pas de rappel immédiat). Chacun n'est rendu qu'une fois."""
+    (créer un rendez-vous pour dans 10 minutes ne déclenche pas de rappel immédiat). Chacun n'est rendu qu'une fois.
+
+    Pour une série, chaque occurrence est rappelée une fois (la plus proche d'abord)."""
     if not lead_minutes or lead_minutes <= 0:
         return []
     with cursor() as cur:
@@ -1196,17 +1332,74 @@ def claim_due_event_reminders(lead_minutes, limit=20):
             FROM users u
             WHERE e.id IN (
                     SELECT id FROM events
-                    WHERE reminded_at IS NULL
+                    WHERE recurrence IS NULL AND reminded_at IS NULL
                       AND start_at - make_interval(mins => %s) <= now()
                       AND start_at > now() - make_interval(mins => %s)
                       AND updated_at <= start_at - make_interval(mins => %s)
                     ORDER BY start_at LIMIT %s FOR UPDATE SKIP LOCKED)
               AND u.id = e.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
-            RETURNING e.id, e.title, e.start_at, e.end_at, e.location, u.telegram_id
+            RETURNING e.id, e.title, e.start_at, e.end_at, e.location, u.telegram_id, u.timezone
             """,
             (lead_minutes, EVENT_REMINDER_MAX_AGE_MINUTES, lead_minutes, limit),
         )
-        return [
-            {"id": r[0], "title": r[1], "start_at": r[2], "end_at": r[3], "location": r[4], "telegram_id": r[5]}
+        reminders = [
+            {"id": r[0], "title": r[1], "start_at": r[2], "end_at": r[3], "location": r[4], "telegram_id": r[5], "timezone": r[6]}
             for r in cur.fetchall()
         ]
+    reminders += _claim_series_reminders(lead_minutes, limit)
+    return _with_linked_tasks(reminders)
+
+
+def _claim_series_reminders(lead_minutes, limit):
+    import agenda
+
+    lead = timedelta(minutes=lead_minutes)
+    max_age = timedelta(minutes=EVENT_REMINDER_MAX_AGE_MINUTES)
+    claimed = []
+    columns = ", ".join("e." + c.strip() for c in _EVENT_COLUMNS.split(","))
+    with cursor() as cur:
+        cur.execute("SELECT now()")
+        now = cur.fetchone()[0]
+        cur.execute(
+            f"SELECT {columns}, e.reminded_for, u.telegram_id, u.timezone "  # noqa: S608
+            "FROM events e JOIN users u ON u.id = e.user_id "
+            "WHERE e.recurrence IS NOT NULL AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL "
+            "AND e.start_at <= now() + make_interval(mins => %s) "
+            "AND (e.recurrence_until IS NULL OR e.recurrence_until >= current_date - 1) "
+            "ORDER BY e.id LIMIT 500 FOR UPDATE OF e SKIP LOCKED",
+            (lead_minutes,),
+        )
+        for row in cur.fetchall():
+            if len(claimed) >= limit:
+                break
+            event, reminded_for, telegram_id, zone = _event(row[:11]), row[11], row[12], row[13]
+            due = [
+                o for o in agenda.occurrences(event, now - max_age, now + lead + timedelta(seconds=1))
+                if o["start_at"] > now - max_age and o["start_at"] - lead <= now
+                and (reminded_for is None or o["start_at"] > reminded_for)
+                and event["updated_at"] <= o["start_at"] - lead
+            ]
+            if not due:
+                continue
+            occurrence = min(due, key=lambda o: o["start_at"])
+            cur.execute("UPDATE events SET reminded_for = %s WHERE id = %s", (occurrence["start_at"], event["id"]))
+            claimed.append({
+                "id": event["id"], "title": event["title"], "start_at": occurrence["start_at"], "end_at": occurrence["end_at"],
+                "location": event["location"], "telegram_id": telegram_id, "timezone": zone,
+                "recurrence": event["recurrence"], "recurrence_until": event["recurrence_until"],
+                "occurrence": occurrence["occurrence"],
+            })
+    return claimed
+
+
+def _with_linked_tasks(reminders):
+    """Ajoute à chaque rappel les tâches ouvertes liées à son rendez-vous (clé « tasks » : liste de titres)."""
+    for reminder in reminders:
+        with cursor() as cur:
+            cur.execute(
+                "SELECT t.title FROM tasks t JOIN events e ON e.id = t.event_id AND e.user_id = t.user_id "
+                "WHERE t.event_id = %s AND t.status IN ('a_faire', 'en_cours') ORDER BY (t.due_at IS NULL), t.due_at, t.id LIMIT 5",
+                (reminder["id"],),
+            )
+            reminder["tasks"] = [r[0] for r in cur.fetchall()]
+    return reminders

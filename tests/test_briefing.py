@@ -174,9 +174,22 @@ def test_pas_d_agenda_pour_un_testeur(db, briefing, tools, friend, now, monkeypa
     assert "Privé" not in briefing.build(friend, "tester", now) and calls == []
 
 
+def tzname():
+    from tools import TZ_NAME
+
+    return TZ_NAME
+
+
+def at(day, clock):
+    """Instant correspondant à ce jour et cette heure dans le fuseau par défaut de FOX."""
+    from tools import TZ
+
+    return datetime.combine(day, clock, tzinfo=TZ)
+
+
 # --- Envoi unique, à l'heure --------------------------------------------------------------
 def claim(db, hour, minute=0, day=date(2026, 10, 22)):
-    return db.claim_due_briefings(day, time(hour, minute))
+    return db.claim_due_briefings(at(day, time(hour, minute)), tzname())
 
 
 def enable(db, user, send_time="08:00"):
@@ -233,19 +246,19 @@ def test_chacun_a_sa_propre_heure(db, alice, friend):
 def test_activer_apres_l_heure_ne_declenche_pas_d_envoi_le_jour_meme(db, briefing, alice, now):
     late = now.replace(hour=10)
     briefing.configure(alice, enabled=True, now=late)
-    assert db.claim_due_briefings(late.date(), late.time()) == []
-    assert len(db.claim_due_briefings(late.date() + timedelta(days=1), time(8, 0))) == 1
+    assert db.claim_due_briefings(at(late.date(), late.time()), tzname()) == []
+    assert len(db.claim_due_briefings(at(late.date() + timedelta(days=1), time(8, 0)), tzname())) == 1
 
 
 def test_activer_avant_l_heure_laisse_le_briefing_partir_aujourd_hui(db, briefing, alice, now):
     briefing.configure(alice, enabled=True, now=now.replace(hour=6))
-    assert len(db.claim_due_briefings(now.date(), time(8, 0))) == 1
+    assert len(db.claim_due_briefings(at(now.date(), time(8, 0)), tzname())) == 1
 
 
 def test_choisir_une_heure_deja_passee_saute_aujourd_hui(db, briefing, alice, now):
     briefing.configure(alice, enabled=True, time="9:00", now=now.replace(hour=6))
     briefing.configure(alice, time="7:00", now=now.replace(hour=8))
-    assert db.claim_due_briefings(now.date(), time(8, 30)) == []
+    assert db.claim_due_briefings(at(now.date(), time(8, 30)), tzname()) == []
 
 
 def test_deux_releves_simultanes_n_envoient_qu_un_briefing(db, alice, friend):

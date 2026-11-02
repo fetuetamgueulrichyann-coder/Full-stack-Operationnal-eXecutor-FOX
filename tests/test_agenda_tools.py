@@ -246,3 +246,62 @@ def test_plafond_groq_atteint_n_est_pas_contourne(agent, make_user, groq, monkey
     with pytest.raises(agent.ProviderQuotaExceeded):
         agent.chat(user["id"], "x", "tester")
     assert groq.sent == []
+
+
+# --- Répétition (phase B6) ------------------------------------------------------------------------
+def test_creation_d_une_serie_par_l_ia(agent, db, make_user, tomorrow):
+    user = make_user()
+    kind, value = agent.dispatch_tool_call(
+        user["id"], "tester", "creer_rdv", {"titre": "Sport", "debut": tomorrow, "repetition": "chaque semaine jusqu'au 31/12/2099"}
+    )
+    assert kind == "pending" and "Répétition : chaque semaine jusqu'au 31/12/2099" in value["summary"]
+    agent.resolve_action(user["id"], value["id"], True, "tester")
+    event = events_of(db, user)[0]
+    assert event["recurrence"] == "weekly" and event["recurrence_until"].year == 2099 and len(events_of(db, user)) >= 4
+
+
+def test_repetition_invalide_refusee_a_la_proposition(agent, make_user, tomorrow):
+    user = make_user()
+    kind, value = agent.dispatch_tool_call(user["id"], "tester", "creer_rdv", {"titre": "X", "debut": tomorrow, "repetition": "parfois"})
+    assert kind == "error" and "non reconnue" in value
+
+
+def test_modifier_la_repetition_et_la_fin(agent, db, make_user, tomorrow):
+    user = make_user()
+    propose_and_confirm(agent, db, user, "creer_rdv", {"titre": "Point", "debut": tomorrow, "repetition": "chaque jour"})
+    event = db.list_events(user["id"], datetime.now().astimezone(), datetime.now().astimezone() + timedelta(days=2))[0]
+    kind, value = agent.dispatch_tool_call(user["id"], "tester", "modifier_rdv", {"rdv_id": event["id"], "jusqu_au": "31/12/2099"})
+    assert "Fin de la répétition : 31/12/2099" in value["summary"]
+    agent.resolve_action(user["id"], value["id"], True, "tester")
+    assert db.get_event(user["id"], event["id"])["recurrence_until"].year == 2099
+    assert propose_and_confirm(agent, db, user, "modifier_rdv", {"rdv_id": event["id"], "repetition": "aucune"}) == "Rendez-vous modifié."
+    assert db.get_event(user["id"], event["id"])["recurrence"] is None
+
+
+def test_supprimer_une_occurrence_ou_toute_la_serie(agent, db, make_user, tomorrow):
+    user = make_user()
+    propose_and_confirm(agent, db, user, "creer_rdv", {"titre": "Point", "debut": tomorrow, "repetition": "chaque jour"})
+    (first, *_) = db.list_events(user["id"], datetime.now().astimezone(), datetime.now().astimezone() + timedelta(days=3))
+    kind, value = agent.dispatch_tool_call(user["id"], "tester", "supprimer_rdv", {"rdv_id": first["id"], "occurrence": first["occurrence"]})
+    assert "uniquement l'occurrence" in value["summary"]
+    agent.resolve_action(user["id"], value["id"], True, "tester")
+    assert db.get_event(user["id"], first["id"])["skipped_days"]
+    kind, value = agent.dispatch_tool_call(user["id"], "tester", "supprimer_rdv", {"rdv_id": first["id"]})
+    assert "TOUTE la série" in value["summary"]
+    agent.resolve_action(user["id"], value["id"], True, "tester")
+    assert db.get_event(user["id"], first["id"]) is None
+
+
+def test_occurrence_sur_un_rendez_vous_simple_refusee(agent, db, make_user, tomorrow):
+    user = make_user()
+    propose_and_confirm(agent, db, user, "creer_rdv", {"titre": "Seul", "debut": tomorrow})
+    (event,) = events_of(db, user)
+    kind, value = agent.dispatch_tool_call(user["id"], "tester", "supprimer_rdv", {"rdv_id": event["id"], "occurrence": tomorrow[:10]})
+    assert kind == "error" and "pas une série" in value
+
+
+def test_le_modele_peut_lister_les_series(agent, db, make_user, tomorrow):
+    user = make_user()
+    propose_and_confirm(agent, db, user, "creer_rdv", {"titre": "Point", "debut": tomorrow, "repetition": "chaque jour"})
+    kind, value = agent.dispatch_tool_call(user["id"], "tester", "lister_rdv", {"periode": "semaine"})
+    assert kind == "result" and len(value) >= 6 and value[0]["repeat"] == "chaque jour" and value[0]["occurrence"]

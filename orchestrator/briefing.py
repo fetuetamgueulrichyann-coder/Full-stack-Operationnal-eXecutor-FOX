@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 
 import db
 import tasks
-from tools import REGISTRY, TZ
+from tools import REGISTRY, tz
 
 log = logging.getLogger("orchestrator.briefing")
 
@@ -38,7 +38,7 @@ def configure(user_id, enabled=None, time=None, now=None):
     Activer ou régler une heure déjà passée aujourd'hui ne déclenche pas d'envoi rétroactif : le prochain
     briefing est celui de demain.
     """
-    now = now or datetime.now(TZ)
+    now = now or datetime.now(tz())
     send_time = parse_time(time) if time is not None else None
     effective = send_time or db.get_briefing(user_id)["time"]
     skip_today = now.date() if now.strftime("%H:%M") >= effective else None
@@ -60,12 +60,13 @@ def agenda_events(role, now):
 
 def own_events(user_id, now):
     """Rendez-vous du jour de l'agenda interne, au même format que les événements Google."""
-    start = datetime(now.year, now.month, now.day, tzinfo=TZ)
+    start = datetime(now.year, now.month, now.day, tzinfo=tz())
     items = db.list_events(user_id, start, start + timedelta(days=1))
+    linked = db.open_tasks_for_events(user_id, [e["id"] for e in items])
     return [
-        {"debut": e["start_at"].astimezone(TZ).isoformat(timespec="minutes"),
-         "fin": e["end_at"].astimezone(TZ).isoformat(timespec="minutes"),
-         "titre": e["title"], "lieu": e["location"]}
+        {"debut": e["start_at"].astimezone(tz()).isoformat(timespec="minutes"),
+         "fin": e["end_at"].astimezone(tz()).isoformat(timespec="minutes"),
+         "titre": e["title"], "lieu": e["location"], "taches": [t["title"] for t in linked.get(e["id"], [])]}
         for e in items
     ]
 
@@ -75,11 +76,12 @@ def event_line(event):
     end = str(event.get("fin") or "")
     when = f"{start[11:16]}-{end[11:16]} " if len(start) > 10 and len(end) > 10 else "toute la journée "
     place = f" ({event['lieu']})" if event.get("lieu") else ""
-    return f"- {when}{event.get('titre', '(sans titre)')}{place}"
+    todo = f" — à préparer : {', '.join(event['taches'])}" if event.get("taches") else ""
+    return f"- {when}{event.get('titre', '(sans titre)')}{place}{todo}"
 
 
 def task_line(task, today):
-    local = task["due_at"].astimezone(TZ) if task["due_at"] else None
+    local = task["due_at"].astimezone(tz()) if task["due_at"] else None
     prefix = ""
     if local and db.has_time(local):  # l'heure se lit dans le fuseau de FOX : « jour seul » = 23:59:59 local
         prefix = f"{local:%H:%M} "
@@ -101,21 +103,21 @@ def section(title, lines):
 
 def build(user_id, role="owner", now=None):
     """Texte Markdown du briefing de la journée."""
-    now = now or datetime.now(TZ)
+    now = now or datetime.now(tz())
     today = now.date()
     overdue, due_today, soon, undated = [], [], [], 0
     for task in db.list_tasks(user_id, db.OPEN_STATUSES, limit=200):
         if task["due_at"] is None:
             undated += 1
             continue
-        day = task["due_at"].astimezone(TZ).date()
+        day = task["due_at"].astimezone(tz()).date()
         if day < today:
             overdue.append(task)
         elif day == today:
             due_today.append(task)
         elif day <= today + timedelta(days=SOON_DAYS):
             soon.append(task)
-    due_today.sort(key=lambda t: (not db.has_time(t["due_at"].astimezone(TZ)), t["due_at"]))
+    due_today.sort(key=lambda t: (not db.has_time(t["due_at"].astimezone(tz())), t["due_at"]))
 
     lines = [f"**Briefing du {DAYS[today.weekday()]} {today:%d/%m}**", ""]
     lines += section("En retard", [task_line(t, today) for t in overdue])

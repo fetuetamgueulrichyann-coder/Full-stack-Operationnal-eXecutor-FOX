@@ -14,7 +14,7 @@ import db
 import memory
 import agenda_tools  # noqa: F401  (enregistre les outils de l'agenda interne)
 import tasks  # noqa: F401  (enregistre les outils de tâches)
-from tools import IRREVERSIBLE, REGISTRY, TZ, TZ_NAME, Tool, register
+from tools import IRREVERSIBLE, REGISTRY, Tool, register, tz, tz_name
 
 log = logging.getLogger("agent")
 
@@ -419,13 +419,13 @@ def exposed_tools(role):
 
 
 def system_prompt(with_tools=True, role="owner", user_id=None):
-    now = datetime.now(TZ).isoformat(timespec="minutes")
+    now = datetime.now(tz()).isoformat(timespec="minutes")
     has_tools = with_tools and bool(exposed_tools(role))
     tools_part = PROMPT_WITH_TOOLS if has_tools else PROMPT_WITHOUT_TOOLS
     if has_tools and any(t.name == "lire_agenda" for t in exposed_tools(role)):
         tools_part += PROMPT_GOOGLE_CALENDAR
     remembered = memory.prompt_block(user_id) if user_id is not None else ""
-    return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {TZ_NAME}).{remembered}"
+    return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {tz_name()}).{remembered}"
 
 
 PRIVATE_HIDDEN_TOOLS = ("retenir",)  # en mode privé, rien n'est mémorisé

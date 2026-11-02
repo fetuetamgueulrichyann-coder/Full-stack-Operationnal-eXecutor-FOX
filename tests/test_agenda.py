@@ -100,7 +100,7 @@ def test_evenement_minimal(agenda, now):
 
 
 @pytest.mark.parametrize("text, message", [
-    ("", "Format"), ("Appel", "Format"), ("a|b|c|d|e", "Format"), (" | demain 14h", "titre"), ("x" * 151 + " | 14h", "trop long"),
+    ("", "Format"), ("Appel", "Format"), ("a|b|c|d|e|f", "Format"), (" | demain 14h", "titre"), ("x" * 151 + " | 14h", "trop long"),
     ("A | demain 14h | 1h | " + "x" * 101, "Lieu|lieu"), ("A | demain 14h | abc", "Durée"), ("A | demain", "Indique l'heure"),
 ])
 def test_evenement_invalide(agenda, now, text, message):

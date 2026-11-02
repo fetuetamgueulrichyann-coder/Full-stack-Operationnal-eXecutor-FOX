@@ -248,6 +248,8 @@ def tasks_message(tasks):
             details.append(f"priorité {task['priority']}")
         if task.get("status") == "en_cours":
             details.append("en cours")
+        if task.get("event_title"):
+            details.append(f"rdv : {task['event_title']}")
         suffix = f" ({', '.join(details)})" if details else ""
         lines.append(f"{position}. {task['title']}{suffix}")
     if len(tasks) > MAX_TASKS_SHOWN:
@@ -523,8 +525,10 @@ AGENDA_TITLES = {
 MAX_EVENTS_SHOWN = 15
 EVENT_HELP = (
     "Rendez-vous :\n"
-    "/rdv Titre | quand | durée | lieu : ajouter un rendez-vous (durée et lieu facultatifs)\n"
+    "/rdv Titre | quand | durée | lieu | répétition : ajouter un rendez-vous (tout sauf titre et moment est facultatif)\n"
     "Exemples : /rdv Réunion | demain 14h | 1h30 | Douala, /rdv Appel Paul | lundi 10h, /rdv Dentiste | 27/11 à 9h30\n"
+    "Répétition : chaque jour, jours ouvrés, chaque semaine, chaque mois, avec « jusqu'au 31/12 » si besoin. "
+    "Exemple : /rdv Point d'équipe | lundi 9h | 30 min | | chaque semaine\n"
     "/agenda : les 7 prochains jours ; aussi /agenda aujourd'hui, /agenda demain, /agenda mois\n"
     "Sous la liste, un bouton permet de supprimer un rendez-vous. Tu es prévenu avant chaque rendez-vous."
 )
@@ -555,7 +559,8 @@ def event_time(event):
 
 def event_text(event):
     place = f" ({event['location']})" if event.get("location") else ""
-    return f"{event_time(event)} {event['title']}{place}"
+    repeat = f" · {event['repeat']}" if event.get("repeat") else ""
+    return f"{event_time(event)} {event['title']}{place}{repeat}"
 
 
 def agenda_message(data, word=""):
@@ -564,27 +569,37 @@ def agenda_message(data, word=""):
     if not events:
         return f"**{title}**\nRien de prévu. Ajoute un rendez-vous avec /rdv Titre | demain 14h | 1h | lieu."
     lines = [f"**{title} ({len(events)})**"]
-    current = None
+    current, with_tasks = None, set()
     for position, event in enumerate(events[:MAX_EVENTS_SHOWN], start=1):
         day = str(event["start"])[:10]
         if day != current:
             current = day
             lines.append(f"**{day_label(day, data.get('today'))}**")
-        lines.append(f"{position}. {event_text(event)}")
+        lines.append(f"{position}. {event_text(event)} (n°{event['id']})")
+        if event["id"] not in with_tasks:  # une série : ses tâches ne sont montrées qu'une fois
+            with_tasks.add(event["id"])
+            for task in (event.get("tasks") or [])[:3]:
+                lines.append(f"   ↳ à faire : {task['title']}")
     if len(events) > MAX_EVENTS_SHOWN:
         lines.append(f"… et {len(events) - MAX_EVENTS_SHOWN} autre(s).")
     return "\n".join(lines)
 
 
 def agenda_buttons(events):
-    """Une ligne par rendez-vous affiché : [Supprimer n] (n = position dans la liste)."""
-    return [[(f"Supprimer {n}", f"evdel:{e['id']}")] for n, e in enumerate(events[:MAX_EVENTS_SHOWN], start=1)]
+    """Une ligne par rendez-vous affiché : [Supprimer n] (n = position dans la liste).
+    Pour une occurrence d'une série, le jour est joint pour pouvoir ne supprimer que celle-ci."""
+    def data(event):
+        day = str(event.get("occurrence") or "").replace("-", "")
+        return f"evdel:{event['id']}:{day}" if event.get("repeat") and len(day) == 8 else f"evdel:{event['id']}"
+
+    return [[(f"Supprimer {n}", data(e))] for n, e in enumerate(events[:MAX_EVENTS_SHOWN], start=1)]
 
 
 def event_created_message(data):
     event = data["event"]
     day = str(event["start"])[:10]
-    lines = [f"Rendez-vous ajouté : {day_label(day, day)} {event_text(event)}"]
+    lines = [f"Rendez-vous ajouté (n°{event['id']}) : {day_label(day, day)} {event_text(event)}"]
+    lines.append(f"Pour lui lier une tâche : /tache Préparer … | rdv {event['id']}")
     for other in data.get("conflicts") or []:
         lines.append(f"Attention : il chevauche « {other['title']} » ({event_time(other)}).")
     return "\n".join(lines)
@@ -608,7 +623,24 @@ def event_reminder_message(reminder, now=None):
         head = "Rendez-vous maintenant"
     else:
         head = f"Rendez-vous dans {minutes} min"
-    return f"**{head}**\n{event_text(reminder)}"
+    text = f"**{head}**\n{event_text(reminder)}"
+    if reminder.get("tasks"):
+        text += "\nÀ faire avant : " + ", ".join(str(t) for t in reminder["tasks"][:5])
+    return text
+
+
+def timezone_message(data, changed=False):
+    """Texte de /fuseau : fuseau actuel (ou nouveau), heure locale, comment le changer."""
+    name = data.get("timezone", "?")
+    clock = str(data.get("now", ""))[11:16]
+    origin = "choisi par toi" if data.get("custom") else "par défaut"
+    head = f"Fuseau enregistré : {name}." if changed else f"Ton fuseau : {name} ({origin})."
+    lines = [head, f"Il est {clock} chez toi." if clock else ""]
+    if changed:
+        lines.append("Les rendez-vous déjà créés restent au même instant : seule l'heure affichée change.")
+    else:
+        lines.append("Change-le avec /fuseau Paris, /fuseau Europe/Paris ou /fuseau défaut " f"(par défaut : {data.get('default', '?')}).")
+    return "\n".join(line for line in lines if line)
 
 
 def briefing_command(args):

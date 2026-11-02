@@ -336,7 +336,7 @@ def user_from_session(token):
     with db.cursor() as cur:
         cur.execute(
             """
-            SELECT u.id, u.username, u.role
+            SELECT u.id, u.username, u.role, u.timezone
             FROM sessions s JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = %s AND s.expires_at > now() AND u.disabled_at IS NULL
             """,
@@ -346,7 +346,7 @@ def user_from_session(token):
         if row is None:
             return None
         cur.execute("UPDATE sessions SET last_seen_at = now() WHERE token_hash = %s", (sha256(token),))
-    return {"id": row[0], "username": row[1], "role": row[2]}
+    return {"id": row[0], "username": row[1], "role": row[2], "timezone": row[3]}
 
 
 def logout(token):
@@ -365,11 +365,11 @@ def user_from_telegram(telegram_id):
         return None
     with db.cursor() as cur:
         cur.execute(
-            "SELECT id, username, role FROM users WHERE telegram_id = %s AND disabled_at IS NULL",
+            "SELECT id, username, role, timezone FROM users WHERE telegram_id = %s AND disabled_at IS NULL",
             (telegram_id,),
         )
         row = cur.fetchone()
-    return None if row is None else {"id": row[0], "username": row[1], "role": row[2]}
+    return None if row is None else {"id": row[0], "username": row[1], "role": row[2], "timezone": row[3]}
 
 
 def set_disabled(username, disabled):

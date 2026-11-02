@@ -1,4 +1,6 @@
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Optional
@@ -10,6 +12,50 @@ IRREVERSIBLE = "irreversible"
 
 TZ_NAME = os.environ.get("TIMEZONE", "Africa/Douala")
 TZ = ZoneInfo(TZ_NAME)
+
+# Fuseau de l'utilisateur de la requête en cours (None : fuseau par défaut de FOX). Défini à l'authentification
+# et remis à zéro à la fin de chaque requête ; les tâches de fond le fixent utilisateur par utilisateur.
+_CURRENT_ZONE = ContextVar("fox_zone", default=None)
+
+
+def valid_zone(name):
+    """ZoneInfo d'un nom IANA, ou None si le nom est vide ou inconnu."""
+    if not name or not isinstance(name, str) or len(name) > 64:
+        return None
+    try:
+        return ZoneInfo(name.strip())
+    except (ValueError, OSError, KeyError):
+        return None
+
+
+def tz():
+    """Fuseau de l'utilisateur courant, sinon le fuseau par défaut."""
+    return _CURRENT_ZONE.get() or TZ
+
+
+def tz_name():
+    return getattr(tz(), "key", None) or TZ_NAME
+
+
+def set_user_zone(name):
+    """Fixe le fuseau courant (nom IANA ; un nom vide ou invalide revient au fuseau par défaut)."""
+    return _CURRENT_ZONE.set(valid_zone(name))
+
+
+def reset_user_zone(token=None):
+    if token is not None:
+        _CURRENT_ZONE.reset(token)
+    else:
+        _CURRENT_ZONE.set(None)
+
+
+@contextmanager
+def user_zone(name):
+    token = set_user_zone(name)
+    try:
+        yield
+    finally:
+        _CURRENT_ZONE.reset(token)
 
 CALENDAR_ID = "primary"
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events"
@@ -65,7 +111,7 @@ def parse_dt(value, end_of_day=False):
     if len(text) == 10 and end_of_day:
         dt = dt.replace(hour=23, minute=59, second=59)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=TZ)
+        dt = dt.replace(tzinfo=tz())
     return dt
 
 
@@ -84,7 +130,7 @@ def fmt_range(start, end):
 
 
 def time_field(dt):
-    return {"dateTime": dt.isoformat(), "timeZone": TZ_NAME}
+    return {"dateTime": dt.isoformat(), "timeZone": tz_name()}
 
 
 # --- Google Calendar ---------------------------------------------------------
