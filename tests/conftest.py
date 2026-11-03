@@ -15,6 +15,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import psycopg2
 import pytest
+from flask.testing import FlaskClient
+from werkzeug.datastructures import Headers
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ORCHESTRATOR_DIR = pathlib.Path(os.environ.get("ORCHESTRATOR_DIR", ROOT / "orchestrator"))
@@ -31,6 +33,8 @@ if not ADMIN_URL:
 
 sys.path.insert(0, str(ORCHESTRATOR_DIR))
 sys.path.insert(1, str(BOT_DIR))  # logique du bot sans Telegram (botlogic.py)
+
+import websecurity  # noqa: E402  (ne dépend ni de la base ni du réseau)
 
 # Environnement fictif défini AVANT l'import des modules de FOX.
 os.environ.update(
@@ -160,10 +164,29 @@ def agent(database_url, db, tools):
     return module
 
 
+class BrowserLikeClient(FlaskClient):
+    """Client de test qui se comporte comme l'interface web : il envoie l'origine et le jeton CSRF.
+
+    Les tests de sécurité (tests/test_websecurity.py) utilisent un client brut, sans ces en-têtes.
+    """
+
+    def open(self, *args, **kwargs):
+        method = str(kwargs.get("method", "GET")).upper()
+        headers = Headers(kwargs.get("headers") or {})
+        if method in ("POST", "PUT", "PATCH", "DELETE") and "X-Fox-Service-Token" not in headers:
+            cookie = self.get_cookie("fox_session")
+            if cookie is not None:
+                headers.setdefault("X-CSRF-Token", websecurity.csrf_token(cookie.value))
+            headers.setdefault("Origin", "http://localhost")
+            kwargs["headers"] = headers
+        return super().open(*args, **kwargs)
+
+
 @pytest.fixture(scope="session")
 def app_module(database_url, db, agent):
     import app as module
 
+    module.app.test_client_class = BrowserLikeClient
     return module
 
 

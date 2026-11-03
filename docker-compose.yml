@@ -71,6 +71,9 @@ services:
       GROQ_MAX_TOKENS_PER_DAY: ${GROQ_MAX_TOKENS_PER_DAY:-180000}
       SESSION_DAYS: ${SESSION_DAYS:-7}
       COOKIE_SECURE: ${COOKIE_SECURE:-0}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
     volumes:
       - ./db/migrations:/migrations:ro
     depends_on:
@@ -95,6 +98,28 @@ services:
       FOX_SERVICE_TOKEN: ${FOX_SERVICE_TOKEN:?définir FOX_SERVICE_TOKEN dans .env (voir .env.example)}
       ORCHESTRATOR_URL: http://orchestrator:5000
       REMINDER_POLL_SECONDS: ${REMINDER_POLL_SECONDS:-30}
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - fox_net
+
+  # Interface web : React + API sur un même domaine, derrière Caddy (HTTPS automatique).
+  #   docker compose --profile prod up -d proxy
+  proxy:
+    profiles: ["prod"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web/dist:/srv/web:ro
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       orchestrator:
         condition: service_healthy
@@ -129,3 +154,5 @@ networks:
 
 volumes:
   pgdata:
+  caddy_data:
+  caddy_config:

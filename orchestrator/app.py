@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime, timedelta
 
 from flask import Flask, Response, jsonify, request
+from werkzeug.exceptions import HTTPException
+from werkzeug.middleware.proxy_fix import ProxyFix
 from google.genai import errors
 
 import accounts
@@ -22,6 +24,7 @@ import quote_pdf
 import tasks
 import timezones
 import tools
+import websecurity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orchestrator")
@@ -39,12 +42,16 @@ TESTER_MAX_TOKENS_PER_DAY = int(os.environ.get("TESTER_MAX_TOKENS_PER_DAY", "150
 SERVICE_TOKEN = os.environ.get("FOX_SERVICE_TOKEN", "").strip()
 COOKIE_NAME = "fox_session"
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"  # à activer derrière HTTPS (VPS)
+# À activer derrière un reverse proxy de confiance (Caddy, nginx) : adresse IP, schéma et hôte réels.
+TRUST_PROXY = os.environ.get("TRUST_PROXY", "0") == "1"
 MAX_INPUT_CHARS = 4000
 
 PURGE_INTERVAL_SECONDS = 3600
 _last_purge = 0.0
 
 app = Flask(__name__)
+if TRUST_PROXY:
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 AUTH_STATUS = {
     "invalid_credentials": 401,
@@ -92,6 +99,57 @@ def require_json_for_post():
     # origines différentes : un formulaire d'un autre site ne peut pas imiter ces requêtes.
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and not request.is_json:
         return jsonify(error="Content-Type application/json requis"), 415
+
+
+@app.before_request
+def protect_web_requests():
+    """Origine + jeton CSRF pour les requêtes de navigateur (cookie). Le bot (jeton de service) est exempté."""
+    problem = websecurity.check(
+        request.method,
+        request.path,
+        request.headers,
+        request.cookies.get(COOKIE_NAME),
+        request.host_url,
+    )
+    if problem:
+        code, message = problem
+        log.warning("requête web refusée (%s) : %s %s", code, request.method, request.path)
+        return jsonify(error=message, code=code), 403
+
+
+ERROR_CODES = {
+    400: "bad_request",
+    401: "unauthenticated",
+    403: "forbidden",
+    404: "not_found",
+    405: "method_not_allowed",
+    409: "conflict",
+    413: "payload_too_large",
+    415: "unsupported_media_type",
+    422: "unprocessable",
+    429: "rate_limited",
+    500: "internal_error",
+    502: "upstream_error",
+    503: "unavailable",
+}
+
+
+@app.after_request
+def uniform_responses(response):
+    """Toutes les erreurs JSON ont la forme {"error": message, "code": identifiant stable}."""
+    if response.status_code >= 400 and response.is_json:
+        payload = response.get_json(silent=True)
+        if isinstance(payload, dict) and "error" in payload and "code" not in payload:
+            payload["code"] = ERROR_CODES.get(response.status_code, "error")
+            response.set_data(jsonify(payload).get_data())
+    response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    return response
+
+
+@app.errorhandler(HTTPException)
+def handle_http_error(exc):
+    return jsonify(error=exc.description or exc.name), exc.code
 
 
 @app.teardown_request
@@ -160,7 +218,7 @@ def register():
     )
     db.audit(user["id"], "registered", None, {"role": user["role"]})
     token, user = accounts.login(data.get("username"), data.get("password"), request.remote_addr)
-    return open_session(jsonify(user=user), token), 201
+    return open_session(jsonify(user=user, csrf_token=websecurity.csrf_token(token)), token), 201
 
 
 @app.post("/auth/login")
@@ -172,7 +230,7 @@ def login():
         db.audit(None, "login_failed", None, {"code": exc.code})
         raise
     db.audit(user["id"], "login", None, {})
-    return open_session(jsonify(user=user), token)
+    return open_session(jsonify(user=user, csrf_token=websecurity.csrf_token(token)), token)
 
 
 @app.post("/auth/logout")
@@ -192,7 +250,7 @@ def me():
     user, error = authenticate({})
     if error:
         return error
-    return jsonify(user=user)
+    return jsonify(user=user, csrf_token=websecurity.csrf_token(request.cookies.get(COOKIE_NAME)))
 
 
 @app.post("/auth/telegram")
@@ -259,22 +317,22 @@ def message():
         try:
             db.reserve_quota(user_id, user_calls, user_tokens, MAX_CALLS_PER_DAY, MAX_TOKENS_PER_DAY)
         except db.QuotaExceeded as exc:
-            return jsonify(error="plafond journalier atteint", scope=exc.scope), 429
+            return jsonify(error="plafond journalier atteint", code="quota_exceeded", scope=exc.scope), 429
 
         try:
             reply, tokens, pending = agent.chat(
                 user_id, text, role, chat_id=chat_id, private=private
             )
         except agent.ProviderQuotaExceeded:
-            return jsonify(error="capacite du service atteinte"), 503
+            return jsonify(error="capacite du service atteinte", code="capacity_reached"), 503
         except agent.LLMUnavailable:
-            return jsonify(error="modele indisponible"), 503
+            return jsonify(error="modele indisponible", code="model_unavailable"), 503
         except errors.APIError as exc:
             log.error(
                 "Erreur Gemini non temporaire (code=%s, statut=%s) : %s",
                 exc.code, exc.status, exc.message,
             )
-            return jsonify(error="erreur modele", code=exc.code), 502
+            return jsonify(error="erreur modele", code="upstream_error", upstream_status=exc.code), 502
         except Exception:
             log.exception("echec de l'appel au modele")
             return jsonify(error="service indisponible"), 502
@@ -1037,18 +1095,18 @@ def mail_endpoint(field, operation, audit_event):
     try:
         db.reserve_quota(user["id"], user_calls, user_tokens, MAX_CALLS_PER_DAY, MAX_TOKENS_PER_DAY)
     except db.QuotaExceeded as exc:
-        return None, (jsonify(error="plafond journalier atteint", scope=exc.scope), 429)
+        return None, (jsonify(error="plafond journalier atteint", code="quota_exceeded", scope=exc.scope), 429)
     try:
         result, tokens = operation(user, text)
     except mail.MailInputError as exc:
         return None, (jsonify(error=str(exc)), 400)
     except agent.ProviderQuotaExceeded:
-        return None, (jsonify(error="capacite du service atteinte"), 503)
+        return None, (jsonify(error="capacite du service atteinte", code="capacity_reached"), 503)
     except agent.LLMUnavailable:
-        return None, (jsonify(error="modele indisponible"), 503)
+        return None, (jsonify(error="modele indisponible", code="model_unavailable"), 503)
     except errors.APIError as exc:
         log.error("Erreur Gemini non temporaire (code=%s, statut=%s) : %s", exc.code, exc.status, exc.message)
-        return None, (jsonify(error="erreur modele", code=exc.code), 502)
+        return None, (jsonify(error="erreur modele", code="upstream_error", upstream_status=exc.code), 502)
     except Exception:
         log.exception("echec de l'operation e-mail")
         return None, (jsonify(error="service indisponible"), 502)

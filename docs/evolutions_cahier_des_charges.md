@@ -55,5 +55,6 @@ jour de ces deux documents. Dernière mise à jour : 28/10/2026 (phases A2b, B1 
 5. Agenda interne par utilisateur (/rdv, /agenda, détection de conflits, rappels avant rendez-vous, fusion dans le briefing) : fait, phase B5. Outils IA de l'agenda interne (lister, créer, modifier, supprimer par la conversation, avec confirmation) ouverts aux testeurs grâce aux appels d'outils Groq : fait. Rendez-vous récurrents (jour, jours ouvrés, semaine, mois, avec fin et suppression d'une occurrence), tâches liées aux rendez-vous (agenda, rappel, briefing, IA) et fuseau horaire par utilisateur (/fuseau) : fait, phase B6.
 6. E-mails : rédaction, amélioration, résumé, lien Gmail prérempli, bloc copiable (fait, phase B4).
 7. Module commercial : clients, devis (lignes, totaux, TVA, numérotation) calculés en Python (fait, phase C : /clients, /client, /devis ; PDF du devis, profil d'entreprise et brouillon d'e-mail au client : fait, phase C3 ; clients/devis dans la PWA à venir).
-8. PWA : API, chat, historique, agenda, clients et devis, vie privée, consommation, voix.
-9. Préparation du VPS : Docker Compose de production, HTTPS, sauvegardes, déploiement.
+8. Préparation du web (phase D0) : vérification de l'origine et protection CSRF pour le cookie de session, erreurs d'API uniformes (`error` + `code`), React et API sur un même domaine derrière Caddy, documentation `docs/API.md` : fait. Reste : streaming des réponses de l'IA (plus tard).
+9. PWA : API, chat, historique, agenda, clients et devis, vie privée, consommation, voix.
+10. Préparation du VPS : Docker Compose de production, HTTPS, sauvegardes, déploiement.

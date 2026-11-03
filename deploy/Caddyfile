@@ -1,0 +1,28 @@
+# Reverse proxy de FOX : React et l'API sur UN SEUL domaine (aucun CORS à gérer).
+#
+#   /api/*  -> orchestrateur Flask (le préfixe /api est retiré : /api/tasks devient /tasks)
+#   le reste -> fichiers statiques de React (web/dist), avec repli sur index.html
+#
+# DOMAIN vient du .env : « localhost » pour essayer en local (certificat local de Caddy), un vrai
+# nom de domaine sur le VPS (Caddy obtient et renouvelle seul le certificat HTTPS).
+{$DOMAIN:localhost} {
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		# Une fois le HTTPS validé sur le VPS, activer :
+		# Strict-Transport-Security "max-age=31536000"
+	}
+
+	handle_path /api/* {
+		reverse_proxy orchestrator:5000
+	}
+
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+}

@@ -96,7 +96,7 @@ def test_plafond_du_fournisseur_gratuit_donne_503_distinct(client, agent, monkey
 def test_erreur_gemini_non_temporaire_donne_502_avec_code(client, agent, helpers, monkeypatch):
     stub_chat(monkeypatch, agent, error=helpers.error(404))
     response = post(client)
-    assert response.status_code == 502 and response.get_json()["code"] == 404
+    assert response.status_code == 502 and response.get_json()["code"] == "upstream_error" and response.get_json()["upstream_status"] == 404
 
 
 def test_erreur_python_donne_502_et_reste_journalisee(client, agent, monkeypatch, caplog):

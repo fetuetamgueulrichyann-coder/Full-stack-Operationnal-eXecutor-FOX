@@ -248,6 +248,35 @@ Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste r
 - **Fuseau** : `/fuseau` (voir), `/fuseau Paris` ou `/fuseau Europe/Paris` (changer), `/fuseau défaut`. Il règle la saisie et l'affichage des horaires, les rappels, le briefing du matin (heure locale de chacun) et l'heure donnée à l'IA. Les rendez-vous existants gardent le même instant ; seule leur heure affichée change. Fuseau par défaut : variable `TIMEZONE`.
 - API : `GET/POST /timezone`, `repeat` / `until` sur `POST/PATCH /events`, `DELETE /events/<id>` avec `{"occurrence": "AAAA-MM-JJ"}`, `event_id` sur `POST/PATCH /tasks`.
 
+## Interface web : sécurité, API et déploiement (phase D0)
+
+Préparation de l'interface web (React, phase D) sans modifier les routes existantes. Référence complète :
+[`docs/API.md`](docs/API.md).
+
+- **Origine des requêtes.** Une requête qui modifie quelque chose (POST, PUT, PATCH, DELETE) doit venir de l'origine
+  de l'API, de `PUBLIC_ORIGIN` ou de `ALLOWED_ORIGINS` (en-tête `Origin`, ou `Referer`). Sinon : `403`
+  `origin_forbidden` (`origin_missing` si l'en-tête manque alors qu'un cookie est présent).
+- **Protection CSRF.** Une requête modifiante portant le cookie `fox_session` doit envoyer l'en-tête `X-CSRF-Token`.
+  Le jeton, lié à la session, est renvoyé par `/auth/login`, `/auth/register` et `/auth/me` (champ `csrf_token`).
+  Le bot Telegram (jeton de service) n'est pas concerné. Le code est dans `orchestrator/websecurity.py`.
+- **Erreurs uniformes.** Toute erreur JSON a la forme `{"error": "...", "code": "..."}` (liste des codes dans
+  `docs/API.md`). Les routes inconnues, les mauvaises méthodes et les erreurs 500 répondent aussi en JSON.
+- **Un seul domaine.** Le profil Docker `prod` démarre Caddy (`deploy/Caddyfile`) : `/api/*` va à l'orchestrateur,
+  le reste sert React (`web/dist`). Pas de CORS à configurer.
+
+Variables à ajouter à la main dans `.env` (voir `.env.example`) :
+
+| Variable | Local | Production (VPS, HTTPS) |
+|---|---|---|
+| `DOMAIN` | `localhost` | votre domaine |
+| `PUBLIC_ORIGIN` | vide | `https://votre-domaine` |
+| `ALLOWED_ORIGINS` | `http://localhost:5173` (serveur de dev React) | vide |
+| `COOKIE_SECURE` | `0` | `1` |
+| `TRUST_PROXY` | `0` | `1` |
+
+Essai du proxy en local : `docker compose --profile prod up -d proxy`, puis `https://localhost/api/health`
+(certificat local de Caddy) et `https://localhost/` (page provisoire).
+
 ## Tests
 
 Les tests utilisent une base PostgreSQL temporaire, créée puis supprimée ; ils

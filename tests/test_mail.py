@@ -261,7 +261,7 @@ def test_erreurs_du_modele(client, model, agent, error_name, status):
 def test_erreur_gemini_non_temporaire(client, model, helpers):
     model["error"] = helpers.error(403)
     response = post(client, "/mail/draft", instruction="x")
-    assert response.status_code == 502 and response.get_json()["code"] == 403
+    assert response.status_code == 502 and response.get_json()["code"] == "upstream_error" and response.get_json()["upstream_status"] == 403
 
 
 def test_les_quotas_s_appliquent(client, model, app_module, monkeypatch, friend):
