@@ -419,6 +419,24 @@ def chats_open(chat_id):
     return jsonify(chat_id=chat_id, private=False)
 
 
+@app.get("/chats/<int:chat_id>/messages")
+def chats_messages(chat_id):
+    """Messages d'une conversation, pour afficher l'historique dans l'interface web."""
+    user, error = chat_auth()
+    if error:
+        return error
+    items = db.chat_messages(user["id"], chat_id)
+    if items is None:
+        return jsonify(error="conversation introuvable"), 404
+    zone = tools.tz()
+    messages = []
+    for item in items:
+        at = item["created_at"].astimezone(zone).isoformat(timespec="minutes")
+        messages.append({"id": f"{item['id']}u", "role": "user", "text": item["user_message"], "at": at})
+        messages.append({"id": f"{item['id']}a", "role": "assistant", "text": item["bot_reply"], "at": at})
+    return jsonify(chat_id=chat_id, messages=messages)
+
+
 @app.delete("/chats/<int:chat_id>")
 def chats_delete(chat_id):
     user, error = chat_auth()

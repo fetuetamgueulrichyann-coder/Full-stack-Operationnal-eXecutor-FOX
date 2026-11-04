@@ -248,6 +248,18 @@ Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste r
 - **Fuseau** : `/fuseau` (voir), `/fuseau Paris` ou `/fuseau Europe/Paris` (changer), `/fuseau défaut`. Il règle la saisie et l'affichage des horaires, les rappels, le briefing du matin (heure locale de chacun) et l'heure donnée à l'IA. Les rendez-vous existants gardent le même instant ; seule leur heure affichée change. Fuseau par défaut : variable `TIMEZONE`.
 - API : `GET/POST /timezone`, `repeat` / `until` sur `POST/PATCH /events`, `DELETE /events/<id>` avec `{"occurrence": "AAAA-MM-JJ"}`, `event_id` sur `POST/PATCH /tasks`.
 
+## Interface web React (phase D1)
+
+Le dossier `web/` contient l'interface (React 18, TypeScript, Vite). Cette étape livre la connexion, l'inscription, l'écran de chargement et la discussion ; les autres pages (Agenda, Tâches, Devis, Vie privée, Réglages) sont des emplacements « bientôt ».
+
+```powershell
+docker compose --profile dev up web_dev          # http://localhost:5173 (l'orchestrateur doit tourner)
+docker compose --profile test run --rm web_tests # typecheck + tests Vitest
+docker compose --profile build run --rm web_build # produit web/dist pour Caddy
+```
+
+En développement, Vite relaie `/api` vers l'orchestrateur : le navigateur voit une seule origine, donc `ALLOWED_ORIGINS` n'est pas nécessaire. Nouvelle route côté API : `GET /chats/<id>/messages`.
+
 ## Interface web : sécurité, API et déploiement (phase D0)
 
 Préparation de l'interface web (React, phase D) sans modifier les routes existantes. Référence complète :
@@ -270,7 +282,7 @@ Variables à ajouter à la main dans `.env` (voir `.env.example`) :
 |---|---|---|
 | `DOMAIN` | `localhost` | votre domaine |
 | `PUBLIC_ORIGIN` | vide | `https://votre-domaine` |
-| `ALLOWED_ORIGINS` | `http://localhost:5173` (serveur de dev React) | vide |
+| `ALLOWED_ORIGINS` | vide (le serveur de dev React conserve l'hôte d'origine) | vide |
 | `COOKIE_SECURE` | `0` | `1` |
 | `TRUST_PROXY` | `0` | `1` |
 

@@ -112,7 +112,8 @@ Légende : 🔒 session (cookie) requise ; ✍️ requête modifiante (jeton CSR
 | `POST /message` 🔒✍️ | `text` (obligatoire, 4 000 caractères au plus) ; `chat_id` (facultatif) | `{reply, pending, chat_id, private}`. `pending` est une liste d'actions à confirmer : `[{id, summary}]`. Erreurs : 400, 413, 429 `quota_exceeded`, 502, 503. |
 | `POST /actions/<id>/confirm` 🔒✍️ | `{}` | `{reply}` : résultat de l'action confirmée. |
 | `POST /actions/<id>/cancel` 🔒✍️ | `{}` | `{reply}`. |
-| `GET /chats` 🔒 | | `{chats: [...], current, private}`. `current` : conversation active non vide ou `null`. |
+| `GET /chats` 🔒 | | `{chats: [{id, title, created_at, updated_at, messages}], current, private}`. `current` : conversation active non vide ou `null`. |
+| `GET /chats/<id>/messages` 🔒 | | `{chat_id, messages: [{id, role: "user"\|"assistant", text, at}]}` : relire une conversation (200 derniers échanges). 404 si elle n'est pas à vous. |
 | `POST /chats` 🔒✍️ | `{}` | `201` `{chat_id}` : nouvelle conversation. |
 | `POST /chats/<id>/open` 🔒✍️ | `{}` | `{chat_id, private: false}` : reprendre une conversation. 404 si introuvable. |
 | `DELETE /chats/<id>` 🔒✍️ | `{}` | `{status: "deleted"}`. |
@@ -235,14 +236,14 @@ Navigateur ──https──▶ Caddy (profil Docker « prod », ports 80 et 443
 |---|---|---|
 | `DOMAIN` | `localhost` | `fox.example.com` |
 | `PUBLIC_ORIGIN` | vide | `https://fox.example.com` |
-| `ALLOWED_ORIGINS` | `http://localhost:5173` si serveur de dev React | vide |
+| `ALLOWED_ORIGINS` | vide (utile seulement si le front et l'API ont des adresses différentes) | vide |
 | `COOKIE_SECURE` | `0` | `1` (obligatoire derrière HTTPS) |
 | `TRUST_PROXY` | `0` | `1` (IP, schéma et hôte réels derrière Caddy) |
 
 - Mise en route : construire React (`npm run build` produit `web/dist`), puis
   `docker compose --profile prod up -d proxy`.
 - Développement : le serveur de dev React (Vite) redirige `/api` vers `http://localhost:5000` en retirant le
-  préfixe ; on ajoute `ALLOWED_ORIGINS=http://localhost:5173` dans `.env`.
+  préfixe et conserve l'en-tête `Host` du navigateur : l'API voit la même origine, aucun réglage n'est nécessaire.
 - Le port 5000 de l'orchestrateur reste lié à `127.0.0.1` : seul le proxy est exposé à Internet.
 - Sur le VPS : pare-feu limité aux ports 22, 80 et 443, et suppression du port publié 5000 si on veut isoler
   complètement l'API (phase E).

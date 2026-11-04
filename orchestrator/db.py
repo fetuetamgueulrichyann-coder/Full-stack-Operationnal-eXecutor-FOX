@@ -260,6 +260,29 @@ def list_chats(user_id, limit=20):
         ]
 
 
+def chat_messages(user_id, chat_id, limit=200):
+    """Messages d'une conversation de l'utilisateur, du plus ancien au plus récent ; None si elle n'est pas à lui."""
+    with cursor() as cur:
+        cur.execute("SELECT 1 FROM chats WHERE id = %s AND user_id = %s", (chat_id, user_id))
+        if cur.fetchone() is None:
+            return None
+        cur.execute(
+            """
+            SELECT id, user_message, bot_reply, created_at FROM (
+                SELECT id, user_message, bot_reply, created_at FROM conversations
+                WHERE user_id = %s AND chat_id = %s
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+            ) recent ORDER BY created_at ASC, id ASC
+            """,
+            (user_id, chat_id, limit),
+        )
+        return [
+            {"id": r[0], "user_message": r[1], "bot_reply": r[2], "created_at": r[3]}
+            for r in cur.fetchall()
+        ]
+
+
 def delete_chat(user_id, chat_id):
     """Supprime définitivement une conversation et ses messages. False si elle n'est pas à lui."""
     with cursor() as cur:

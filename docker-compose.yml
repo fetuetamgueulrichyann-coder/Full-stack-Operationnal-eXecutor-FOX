@@ -104,6 +104,48 @@ services:
     networks:
       - fox_net
 
+  # Interface web (React) : développement avec rechargement automatique.
+  #   docker compose --profile dev up web_dev      puis http://localhost:5173
+  web_dev:
+    profiles: ["dev"]
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_TARGET: http://orchestrator:5000
+      VITE_USE_POLLING: "1"
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+    ports:
+      - "127.0.0.1:5173:5173"
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - fox_net
+
+  # Construit l'interface web dans web/dist (servie par le proxy du profil prod).
+  #   docker compose --profile build run --rm web_build
+  web_build:
+    profiles: ["build"]
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci --no-audit --no-fund && npm run build"
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+
+  # Tests de l'interface web : docker compose --profile test run --rm web_tests
+  web_tests:
+    profiles: ["test"]
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci --no-audit --no-fund && npm run typecheck && npm test"
+    volumes:
+      - ./web:/app
+      - web_node_modules:/app/node_modules
+
   # Interface web : React + API sur un même domaine, derrière Caddy (HTTPS automatique).
   #   docker compose --profile prod up -d proxy
   proxy:
@@ -155,4 +197,5 @@ networks:
 volumes:
   pgdata:
   caddy_data:
+  web_node_modules:
   caddy_config:
