@@ -250,7 +250,7 @@ Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste r
 
 ## Interface web React (phase D1)
 
-Le dossier `web/` contient l'interface (React 18, TypeScript, Vite). Cette étape livre la connexion, l'inscription, l'écran de chargement et la discussion ; les autres pages (Agenda, Tâches, Devis, Vie privée, Réglages) sont des emplacements « bientôt ».
+Le dossier `web/` contient l'interface (React 18, TypeScript, Vite). Pages livrées : connexion, inscription, écran de chargement, discussion (réponses mises en forme : gras, listes, code), Agenda et Tâches. Devis, Vie privée et Réglages sont des emplacements « bientôt ».
 
 ```powershell
 docker compose --profile dev up web_dev          # http://localhost:5173 (l'orchestrateur doit tourner)

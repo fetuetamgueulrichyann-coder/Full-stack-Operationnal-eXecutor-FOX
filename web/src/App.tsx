@@ -2,10 +2,12 @@ import { BrowserRouter, Navigate, Outlet, Route, Routes } from "react-router-dom
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { BootScreen } from "./components/BootScreen";
 import { Shell } from "./components/Shell";
+import { Agenda } from "./pages/Agenda";
 import { Chat } from "./pages/Chat";
 import { Login } from "./pages/Login";
 import { Register } from "./pages/Register";
 import { Soon } from "./pages/Soon";
+import { Tasks } from "./pages/Tasks";
 
 /** Pages réservées aux utilisateurs connectés ; l'attente et l'échec réseau passent par l'écran de chargement. */
 function RequireAuth() {
@@ -35,8 +37,8 @@ export function AppRoutes() {
       <Route element={<RequireAuth />}>
         <Route element={<Shell />}>
           <Route path="/" element={<Chat />} />
-          <Route path="/agenda" element={<Soon title="Agenda" />} />
-          <Route path="/taches" element={<Soon title="Tâches" />} />
+          <Route path="/agenda" element={<Agenda />} />
+          <Route path="/taches" element={<Tasks />} />
           <Route path="/devis" element={<Soon title="Clients et devis" />} />
           <Route path="/prive" element={<Soon title="Vie privée" />} />
           <Route path="/reglages" element={<Soon title="Réglages" />} />

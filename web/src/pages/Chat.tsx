@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { describeError } from "../api/errors";
 import type { ChatsResponse, ChatSummary, HistoryMessage, MessageResponse, PendingAction } from "../api/types";
 import { Icon } from "../components/Icon";
+import { Markdown } from "../components/Markdown";
 import logo from "../assets/fox-logo.png";
 
 const REPLY_TIMEOUT_MS = 60_000; // le serveur coupe à 120 s ; on abandonne avant
@@ -271,7 +272,7 @@ export function Chat() {
               <div key={bubble.id} className="assistant">
                 <img src={logo} alt="FOX" width={32} />
                 <div className="assistant-body">
-                  <div className="bubble-text">{bubble.text}</div>
+                  <div className="bubble-text"><Markdown text={bubble.text} /></div>
                   {bubble.actions?.map((action) => (
                     <ActionCard key={action.id} action={action} onDecide={(accept) => void decide(bubble.id, action.id, accept)} />
                   ))}

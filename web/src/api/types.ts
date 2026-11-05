@@ -44,3 +44,47 @@ export interface MessageResponse {
   chat_id: number | null;
   private: boolean;
 }
+
+export interface EventTask {
+  id: number;
+  title: string;
+  [key: string]: unknown;
+}
+
+export interface AgendaEvent {
+  id: number;
+  title: string;
+  location: string | null;
+  start: string;
+  end: string;
+  repeat?: string;
+  occurrence?: string | null;
+  tasks?: EventTask[];
+}
+
+export interface EventsResponse {
+  today: string;
+  events: AgendaEvent[];
+}
+
+export interface EventSaved {
+  event: AgendaEvent;
+  conflicts: AgendaEvent[];
+}
+
+export type TaskStatus = "a_faire" | "en_cours" | "terminee" | "annulee";
+
+export interface Task {
+  id: number;
+  title: string;
+  priority: "haute" | "normale" | "basse";
+  status: TaskStatus;
+  overdue: boolean;
+  due_at: string | null;
+  event_id: number | null;
+  event_title?: string;
+}
+
+export interface TasksResponse {
+  tasks: Task[];
+}
