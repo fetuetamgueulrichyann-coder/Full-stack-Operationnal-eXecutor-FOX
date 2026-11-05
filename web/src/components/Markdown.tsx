@@ -90,8 +90,8 @@ function parse(source: string): Block[] {
   return blocks;
 }
 
-export function Markdown({ text }: { text: string }) {
-  const blocks = parse(text);
+export function Markdown({ text }: { text: string | null | undefined }) {
+  const blocks = parse(typeof text === "string" ? text : "");
   return (
     <div className="md">
       {blocks.map((block, index) => {

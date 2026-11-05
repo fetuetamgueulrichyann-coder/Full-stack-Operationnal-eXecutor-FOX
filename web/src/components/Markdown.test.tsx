@@ -35,3 +35,13 @@ describe("Markdown", () => {
     expect(container.querySelector("em")).toBeNull();
   });
 });
+
+describe("Markdown : textes absents", () => {
+  it("ne plante pas avec un texte vide, null ou undefined", () => {
+    for (const value of [null, undefined, ""]) {
+      const { container, unmount } = render(<Markdown text={value} />);
+      expect(container.textContent).toBe("");
+      unmount();
+    }
+  });
+});

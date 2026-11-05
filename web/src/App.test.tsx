@@ -262,6 +262,27 @@ describe("discussion", () => {
     expect(await screen.findByRole("heading", { name: "Connexion" })).toBeInTheDocument();
   });
 
+  it("affiche une conversation dont une réponse est vide (message interrompu) sans page blanche", async () => {
+    mockApi({
+      ...loggedIn,
+      "GET /chats": () => ({
+        body: { chats: [{ id: 7, title: "Devis atelier", created_at: "2026-11-01T10:00:00Z", updated_at: "2026-11-02T10:00:00Z", messages: 2 }], current: null, private: false },
+      }),
+      "POST /chats/7/open": () => ({ body: { chat_id: 7, private: false } }),
+      "GET /chats/7/messages": () => ({
+        body: { chat_id: 7, messages: [
+          { id: "1u", role: "user", text: "Fais le devis", at: "2026-11-02T10:00:00+01:00" },
+          { id: "1a", role: "assistant", text: null, at: "2026-11-02T10:00:00+01:00" },
+          { id: "2u", role: "user", text: "Tu es là ?", at: "2026-11-02T10:01:00+01:00" },
+        ] },
+      }),
+    });
+    renderApp("/");
+    await userEvent.click(await screen.findByRole("button", { name: /^Devis atelier/ }));
+    expect(await screen.findByText("Tu es là ?")).toBeInTheDocument();
+    expect(screen.getByText("Fais le devis")).toBeInTheDocument();
+  });
+
   it("reprend une conversation de la liste avec son historique", async () => {
     const { calls } = mockApi({
       ...loggedIn,

@@ -29,7 +29,7 @@ export interface ChatsResponse {
 export interface HistoryMessage {
   id: string;
   role: "user" | "assistant";
-  text: string;
+  text: string | null; // une réponse peut manquer (message interrompu)
   at: string;
 }
 
