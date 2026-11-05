@@ -5,6 +5,7 @@ import { Shell } from "./components/Shell";
 import { Agenda } from "./pages/Agenda";
 import { Chat } from "./pages/Chat";
 import { Login } from "./pages/Login";
+import { Quotes } from "./pages/Quotes";
 import { Register } from "./pages/Register";
 import { Soon } from "./pages/Soon";
 import { Tasks } from "./pages/Tasks";
@@ -39,7 +40,7 @@ export function AppRoutes() {
           <Route path="/" element={<Chat />} />
           <Route path="/agenda" element={<Agenda />} />
           <Route path="/taches" element={<Tasks />} />
-          <Route path="/devis" element={<Soon title="Clients et devis" />} />
+          <Route path="/devis" element={<Quotes />} />
           <Route path="/prive" element={<Soon title="Vie privée" />} />
           <Route path="/reglages" element={<Soon title="Réglages" />} />
         </Route>

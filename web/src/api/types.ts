@@ -88,3 +88,47 @@ export interface Task {
 export interface TasksResponse {
   tasks: Task[];
 }
+
+export type QuoteStatus = "brouillon" | "envoye" | "accepte" | "refuse";
+
+export interface QuoteSummary {
+  id: number;
+  number: string;
+  status: QuoteStatus;
+  status_label: string;
+  client: string;
+  total: string;
+  created_at: string | null;
+}
+
+export interface QuoteLine {
+  description: string;
+  quantity: string;
+  unit_price: string;
+  total: string;
+}
+
+export interface Quote extends QuoteSummary {
+  client_id: number | null;
+  currency: string;
+  vat_rate: string;
+  notes: string | null;
+  lines: QuoteLine[];
+  subtotal: string;
+  vat: string;
+}
+
+export interface Client {
+  id: number;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  notes: string | null;
+}
+
+export interface MailDraft {
+  to: string;
+  subject: string;
+  body: string;
+}
