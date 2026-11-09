@@ -266,6 +266,12 @@ h1, h2 { margin: 0; }
 .preview { margin: 0; white-space: pre-wrap; font: inherit; font-size: 14px; line-height: 1.5; background: #f3f5f7; border-radius: 10px; padding: 12px 14px; }
 .switch:disabled { opacity: 0.5; cursor: default; }
 
+.mic { width: 44px; height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--ink); display: grid; place-items: center; cursor: pointer; }
+.mic:hover { background: #eef1f4; }
+.mic.on { background: #fde8e0; color: var(--accent-dark); animation: micpulse 1.2s ease-in-out infinite; }
+@keyframes micpulse { 50% { box-shadow: 0 0 0 6px rgba(194, 65, 12, 0.18); } }
+@media (prefers-reduced-motion: reduce) { .mic.on { animation: none; } }
+
 /* --- Rappels ------------------------------------------------------------- */
 .reminders { position: fixed; top: 16px; right: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
 .reminder { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: #fff; border: 1px solid var(--line, #d8e0e6); border-left: 4px solid var(--accent, #e8710a); border-radius: 12px; padding: 12px 14px; box-shadow: 0 6px 20px rgba(20, 40, 60, .15); }

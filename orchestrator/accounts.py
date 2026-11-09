@@ -182,8 +182,20 @@ def register(code, username, password):
     return {"id": user_id, "username": username, "role": ROLE_TESTER}
 
 
+def registration_mode():
+    """« invite » (défaut : inscription avec un code d'invitation) ou « closed » (plus aucune inscription)."""
+    mode = os.environ.get("REGISTRATION_MODE", "invite").strip().lower()
+    return mode if mode in ("invite", "closed") else "invite"
+
+
+def check_registration_open():
+    if registration_mode() == "closed":
+        raise AuthError("registration_closed", "Les inscriptions sont fermées pour le moment.")
+
+
 def register_from_ip(code, username, password, ip):
     """Inscription avec limitation des essais de code d'invitation par adresse IP."""
+    check_registration_open()
     ip = str(ip or "inconnue")[:64]
     with db.cursor() as cur:
         _, by_ip = _recent_failures(cur, REGISTER_KEY, ip)
@@ -203,6 +215,7 @@ def register_telegram(code, telegram_id):
     Les essais de code sont limités par identifiant Telegram. Un identifiant déjà lié à un
     compte ne consomme pas le code.
     """
+    check_registration_open()
     try:
         telegram_id = int(telegram_id)
     except (TypeError, ValueError):

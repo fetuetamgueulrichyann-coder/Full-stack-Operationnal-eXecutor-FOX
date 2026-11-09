@@ -173,6 +173,7 @@ services:
   tests:
     profiles: ["test"]
     build: ./orchestrator
+    user: root  # l'image tourne en non-root ; les tests installent leurs outils (pip)
     working_dir: /tests
     environment:
       TEST_ADMIN_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/postgres

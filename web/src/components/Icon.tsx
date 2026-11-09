@@ -17,6 +17,7 @@ const PATHS = {
   list: "M4 6h16M4 12h16M4 18h16",
   trash: "M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13",
   more: "M5 12h.01M12 12h.01M19 12h.01",
+  mic: "M9 4a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 11a7 7 0 0 0 14 0M12 18v3",
 } as const;
 
 export type IconName = keyof typeof PATHS;

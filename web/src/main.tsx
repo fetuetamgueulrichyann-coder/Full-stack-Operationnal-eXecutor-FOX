@@ -11,3 +11,10 @@ createRoot(document.getElementById("root") as HTMLElement).render(
     </ErrorBoundary>
   </StrictMode>,
 );
+
+// Application installable : le service worker n'est actif qu'en production (pas avec le serveur de développement).
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+  });
+}

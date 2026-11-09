@@ -8,6 +8,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY *.py ./
 
+# Le service ne tourne pas en root : une faille dans l'application n'ouvre pas tout le conteneur.
+RUN useradd --system --no-create-home --uid 10001 fox
+USER fox
+
 EXPOSE 5000
 # Les migrations s'appliquent avant le démarrage ; un échec arrête le conteneur.
 CMD ["sh", "-c", "python migrate.py && python bootstrap.py && exec gunicorn -b 0.0.0.0:5000 -w 2 --timeout 120 app:app"]

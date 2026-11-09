@@ -4,6 +4,7 @@ import { describeError } from "../api/errors";
 import type { ChatsResponse, ChatSummary, HistoryMessage, MessageResponse, PendingAction } from "../api/types";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
+import { useDictation } from "../lib/dictation";
 import logo from "../assets/fox-logo.png";
 
 const REPLY_TIMEOUT_MS = 60_000; // le serveur coupe à 120 s ; on abandonne avant
@@ -46,6 +47,7 @@ export function Chat() {
   const [lastText, setLastText] = useState("");
   const [showList, setShowList] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
+  const dictation = useDictation((spoken) => setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken)));
 
   const title = chats.find((c) => c.id === activeId);
 
@@ -335,10 +337,22 @@ export function Chat() {
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
+            {dictation.supported && (
+              <button
+                type="button"
+                className={dictation.listening ? "mic on" : "mic"}
+                aria-label={dictation.listening ? "Arrêter la dictée" : "Dicter un message"}
+                aria-pressed={dictation.listening}
+                onClick={() => (dictation.listening ? dictation.stop() : dictation.start())}
+              >
+                <Icon name="mic" />
+              </button>
+            )}
             <button type="submit" className="send" aria-label="Envoyer" disabled={sending || !text.trim()}>
               <Icon name="send" />
             </button>
           </div>
+          {dictation.problem && <span className="banner error" role="alert">{dictation.problem}</span>}
           <span className="muted small-text">Les actions importantes demandent toujours votre confirmation.</span>
         </form>
       </main>

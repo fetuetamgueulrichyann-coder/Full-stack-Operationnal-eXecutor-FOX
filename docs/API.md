@@ -73,6 +73,7 @@ Certaines erreurs ajoutent des champs (par exemple `scope` pour un quota).
 | 404 | `not_found` | Ressource introuvable (ou appartenant à un autre utilisateur) |
 | 405 | `method_not_allowed` | Mauvaise méthode HTTP |
 | 409 | `conflict`, `username_taken`, `account_exists` | Conflit (limite atteinte, nom déjà pris) |
+| 403 | `registration_closed` | Inscriptions fermées (`REGISTRATION_MODE=closed`) |
 | 413 | `payload_too_large` | Texte trop long (4 000 caractères) |
 | 415 | `unsupported_media_type` | Corps non JSON |
 | 429 | `quota_exceeded` | Plafond journalier de l'utilisateur ou global (champ `scope`) |

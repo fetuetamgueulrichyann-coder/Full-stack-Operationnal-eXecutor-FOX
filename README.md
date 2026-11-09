@@ -223,6 +223,7 @@ Chaque utilisateur gère **ses propres** clients et devis (isolés des autres co
 - **Suppression** : `/devis 3 supprime` pour un brouillon ou un devis refusé ; un devis envoyé ou accepté est conservé (passe-le d'abord en refusé). Supprimer un client garde ses devis (le nom y reste).
 - **Archivage** : un devis ne se supprime pas, il s'archive (bouton Archiver / Désarchiver, ou « archive le devis 3 » dans le chat). Le statut est conservé ; la liste des devis a un filtre Actifs / Archivés.
 - **Rappels dans l'interface web** : tant que l'onglet est ouvert, FOX affiche un bandeau (et une notification du navigateur si autorisée) avant un rendez-vous (`AGENDA_REMIND_MINUTES`, 30 par défaut) et à l'heure d'une tâche. Lecture seule : les rappels Telegram ne sont pas consommés. Les vraies notifications hors onglet viendront avec la PWA.
+- **Application installable (PWA) et dictée** : en production, FOX s'installe sur l'écran d'accueil (téléphone ou ordinateur) et démarre plus vite grâce à un service worker qui ne garde que la coquille de l'application (jamais `/api`). Le bouton micro du chat dicte en français (Chrome, Edge, Safari ; absent ailleurs) : le texte arrive dans le champ, rien n'est envoyé sans ton clic. Les notifications quand l'application est fermée (Web Push) restent à faire.
 - **Journal** : le fait seulement (« Devis créé »…), jamais les noms ni les montants.
 - **Limites** : `MAX_CLIENTS` (200), `MAX_QUOTES` (500), 30 lignes par devis.
 - **API** : `/clients` (GET, POST), `/clients/find?q=`, `/clients/<id>` (GET, PATCH, DELETE), `/quotes` (GET, POST), `/quotes/<n°>` (GET, PATCH `{"status"}`, DELETE). Les montants sont renvoyés formatés et en valeurs brutes (`amounts`).
@@ -296,6 +297,8 @@ Variables à ajouter à la main dans `.env` (voir `.env.example`) :
 | `ALLOWED_ORIGINS` | vide (le serveur de dev React conserve l'hôte d'origine) | vide |
 | `COOKIE_SECURE` | `0` | `1` |
 | `TRUST_PROXY` | `0` | `1` |
+
+Guide complet de mise en ligne : [`docs/DEPLOIEMENT.md`](docs/DEPLOIEMENT.md) (pare-feu, HTTPS, sauvegardes, audit de sécurité). `REGISTRATION_MODE=closed` ferme toutes les inscriptions ; au démarrage, FOX signale dans ses journaux les réglages dangereux.
 
 Essai du proxy en local : `docker compose --profile prod up -d proxy`, puis `https://localhost/api/health`
 (certificat local de Caddy) et `https://localhost/` (page provisoire).

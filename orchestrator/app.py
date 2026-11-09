@@ -24,10 +24,13 @@ import quote_pdf
 import tasks
 import timezones
 import tools
+import prodcheck
 import websecurity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("orchestrator")
+for _problem in prodcheck.problems(os.environ):
+    log.warning("configuration : %s", _problem)
 
 # Plafond GLOBAL (tous utilisateurs confondus) par jour, UTC.
 MAX_CALLS_PER_DAY = int(os.environ.get("MAX_CALLS_PER_DAY", "200"))
@@ -61,6 +64,7 @@ AUTH_STATUS = {
     "username_invalid": 400,
     "password_weak": 400,
     "account_exists": 409,
+    "registration_closed": 403,
 }
 
 
