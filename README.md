@@ -221,6 +221,8 @@ Chaque utilisateur gère **ses propres** clients et devis (isolés des autres co
 - **Numérotation** `DV-AAAA-NNN`, continue par utilisateur et par année, jamais réutilisée (même après suppression).
 - **Statuts** : brouillon, envoyé, accepté, refusé. `/devis 3 accepté` ou les boutons sous le devis. `/devis 3` affiche le devis n° 3 de l'année, `/devis DV-2026-003` un devis précis.
 - **Suppression** : `/devis 3 supprime` pour un brouillon ou un devis refusé ; un devis envoyé ou accepté est conservé (passe-le d'abord en refusé). Supprimer un client garde ses devis (le nom y reste).
+- **Archivage** : un devis ne se supprime pas, il s'archive (bouton Archiver / Désarchiver, ou « archive le devis 3 » dans le chat). Le statut est conservé ; la liste des devis a un filtre Actifs / Archivés.
+- **Rappels dans l'interface web** : tant que l'onglet est ouvert, FOX affiche un bandeau (et une notification du navigateur si autorisée) avant un rendez-vous (`AGENDA_REMIND_MINUTES`, 30 par défaut) et à l'heure d'une tâche. Lecture seule : les rappels Telegram ne sont pas consommés. Les vraies notifications hors onglet viendront avec la PWA.
 - **Journal** : le fait seulement (« Devis créé »…), jamais les noms ni les montants.
 - **Limites** : `MAX_CLIENTS` (200), `MAX_QUOTES` (500), 30 lignes par devis.
 - **API** : `/clients` (GET, POST), `/clients/find?q=`, `/clients/<id>` (GET, PATCH, DELETE), `/quotes` (GET, POST), `/quotes/<n°>` (GET, PATCH `{"status"}`, DELETE). Les montants sont renvoyés formatés et en valeurs brutes (`amounts`).
@@ -248,9 +250,18 @@ Chaque utilisateur a son propre agenda dans PostgreSQL (le Google Agenda reste r
 - **Fuseau** : `/fuseau` (voir), `/fuseau Paris` ou `/fuseau Europe/Paris` (changer), `/fuseau défaut`. Il règle la saisie et l'affichage des horaires, les rappels, le briefing du matin (heure locale de chacun) et l'heure donnée à l'IA. Les rendez-vous existants gardent le même instant ; seule leur heure affichée change. Fuseau par défaut : variable `TIMEZONE`.
 - API : `GET/POST /timezone`, `repeat` / `until` sur `POST/PATCH /events`, `DELETE /events/<id>` avec `{"occurrence": "AAAA-MM-JJ"}`, `event_id` sur `POST/PATCH /tasks`.
 
+## Clients et devis dans la discussion (phase D4)
+
+FOX sait créer des clients et des devis depuis la discussion web ou Telegram, en langage naturel : « fais un devis pour Atelier Nkolo : 2 tablettes à 85 000 et 4 étagères à 32 000 ». Outils : `lister_clients`, `creer_client`, `lister_devis`, `creer_devis`, `changer_statut_devis` (module `orchestrator/commercial_tools.py`), ouverts au propriétaire et aux testeurs.
+
+- Toute écriture passe par la confirmation (boutons Confirmer / Annuler) ; la carte de confirmation affiche les lignes, le sous-total, la TVA et le total.
+- Les montants sont calculés par FOX avec `Decimal`, jamais par le modèle de langage.
+- Un client enregistré est reconnu par son nom ; plusieurs correspondances : FOX demande le nom complet.
+- Le PDF et l'e-mail restent dans la page Clients et devis.
+
 ## Interface web React (phase D1)
 
-Le dossier `web/` contient l'interface (React 18, TypeScript, Vite). Pages livrées : connexion, inscription, écran de chargement, discussion (réponses mises en forme : gras, listes, code), Agenda, Tâches, Clients et devis (création, statuts, PDF, brouillon d'e-mail, fiches clients). Vie privée et Réglages sont des emplacements « bientôt ».
+Le dossier `web/` contient l'interface (React 18, TypeScript, Vite). Pages livrées : connexion, inscription, écran de chargement, discussion (réponses mises en forme : gras, listes, code), Agenda, Tâches, Clients et devis (création, statuts, PDF, brouillon d'e-mail, fiches clients), Vie privée (mode privé, mémoire, journal, suppression de l'historique) et Réglages (fuseau, briefing, profil d'entreprise, compte).
 
 ```powershell
 docker compose --profile dev up web_dev          # http://localhost:5173 (l'orchestrateur doit tourner)

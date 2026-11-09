@@ -13,6 +13,7 @@ from google.genai import errors, types
 import db
 import memory
 import agenda_tools  # noqa: F401  (enregistre les outils de l'agenda interne)
+import commercial_tools  # noqa: F401  (enregistre les outils des clients et des devis)
 import tasks  # noqa: F401  (enregistre les outils de tâches)
 from tools import IRREVERSIBLE, REGISTRY, Tool, register, tz, tz_name
 
@@ -73,7 +74,8 @@ SYSTEM_PROMPT = (
 
 PROMPT_WITH_TOOLS = (
     "Utilise les outils disponibles pour consulter ou modifier l'agenda et les tâches. "
-    "Quand l'utilisateur te confie une chose à faire ou à retenir, crée une tâche au lieu de seulement la mentionner. "
+    "Quand l'utilisateur te confie une chose à faire ou à retenir, crée une tâche au lieu de seulement la mentionner, "
+    "sauf s'il te demande de faire un devis : un devis se crée avec creer_devis, jamais avec une tâche. "
     "Pour modifier une tâche, retrouve d'abord son numéro avec lister_taches. "
     "Quand l'utilisateur te demande de retenir une information durable, utilise retenir ; "
     "pour l'oublier, utilise oublier_memoire avec le numéro entre crochets. "
@@ -81,6 +83,13 @@ PROMPT_WITH_TOOLS = (
     "Les rendez-vous se gèrent avec lister_rdv, creer_rdv, modifier_rdv et supprimer_rdv (agenda interne de FOX, "
     "avec rappel avant l'heure) : donne toujours une date et une heure précises à partir de la date actuelle, "
     "et pour modifier ou supprimer un rendez-vous, retrouve d'abord son numéro avec lister_rdv. "
+    "Les clients et les devis se gèrent avec lister_clients, creer_client, lister_devis, creer_devis, "
+    "changer_statut_devis et archiver_devis (un devis ne se supprime pas, il s'archive) : quand on te demande un devis, "
+    "utilise creer_devis (jamais une tâche), avec une ligne « description | quantité | prix unitaire » par article ; "
+    "ne calcule aucun total toi-même, FOX les calcule. Si l'utilisateur ne dit pas ce qu'il faut facturer "
+    "(désignation, quantité ou prix), pose-lui la question au lieu d'inventer. "
+    "Si une demande dépasse tes outils (par exemple générer un PDF ou envoyer un e-mail), dis-le simplement et "
+    "indique que c'est possible dans la page Clients et devis, sans créer de tâche à la place. "
     "Les actions d'écriture sont soumises à la confirmation de l'utilisateur : "
     "propose-les simplement, sans affirmer qu'elles sont déjà faites."
 )

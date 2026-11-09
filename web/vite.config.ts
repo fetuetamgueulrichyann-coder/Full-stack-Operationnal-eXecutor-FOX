@@ -23,5 +23,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // Sous Docker pour Windows les tests sont bien plus lents : on laisse de la marge.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });

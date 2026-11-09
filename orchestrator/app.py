@@ -369,6 +369,15 @@ def decide(action_id, confirm):
     return jsonify(reply=result)
 
 
+@app.get("/actions/pending")
+def actions_pending():
+    """Actions proposées par FOX et pas encore confirmées ni annulées (non expirées), pour les retrouver après un rechargement."""
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(actions=db.list_pending(user["id"]))
+
+
 @app.post("/actions/<action_id>/confirm")
 def confirm_action(action_id):
     return decide(action_id, True)
@@ -584,7 +593,7 @@ def events_list():
         return jsonify(error=str(exc)), 400
     items = db.list_events(user["id"], start, start + timedelta(days=days))
     linked = db.open_tasks_for_events(user["id"], [e["id"] for e in items])
-    return jsonify(today=now.date().isoformat(), events=[{**agenda.public(e), "tasks": linked.get(e["id"], [])} for e in items])
+    return jsonify(today=now.date().isoformat(), reminder_minutes=agenda.REMIND_MINUTES, events=[{**agenda.public(e), "tasks": linked.get(e["id"], [])} for e in items])
 
 
 @app.get("/events/<int:event_id>")
@@ -801,7 +810,8 @@ def quotes_list():
         status = commercial.clean_status(status) if status else None
     except commercial.CommercialInputError as exc:
         return input_error(exc)
-    items = db.list_quotes(user["id"], status)
+    archived = request.args.get("archived") in ("1", "true")
+    items = db.list_quotes(user["id"], status, archived=archived)
     return jsonify(quotes=[commercial.public_quote_summary(q) for q in items])
 
 
@@ -847,8 +857,17 @@ def quotes_update(ref):
     user, error = chat_auth()
     if error:
         return error
+    data = body()
+    if "archived" in data:  # archivage : le statut du devis n'est pas modifié
+        if not isinstance(data["archived"], bool):
+            return jsonify(error="archived doit être true ou false"), 400
+        quote = db.set_quote_archived(user["id"], ref, data["archived"])
+        if quote is None:
+            return jsonify(error="devis introuvable"), 404
+        db.audit(user["id"], "quote_archived" if data["archived"] else "quote_unarchived", None, {"quote_id": quote["id"]})
+        return jsonify(quote=commercial.public_quote(quote))
     try:
-        status = commercial.clean_status(body().get("status"))
+        status = commercial.clean_status(data.get("status"))
     except commercial.CommercialInputError as exc:
         return input_error(exc)
     quote = db.set_quote_status(user["id"], ref, status)

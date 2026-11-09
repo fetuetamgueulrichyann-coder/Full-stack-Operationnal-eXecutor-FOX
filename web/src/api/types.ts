@@ -64,6 +64,7 @@ export interface AgendaEvent {
 
 export interface EventsResponse {
   today: string;
+  reminder_minutes?: number;
   events: AgendaEvent[];
 }
 
@@ -99,6 +100,7 @@ export interface QuoteSummary {
   client: string;
   total: string;
   created_at: string | null;
+  archived?: boolean;
 }
 
 export interface QuoteLine {
@@ -131,4 +133,36 @@ export interface MailDraft {
   to: string;
   subject: string;
   body: string;
+}
+
+export interface MemoryItem {
+  id: number;
+  content: string;
+  source: "user" | "fox";
+  created_at: string;
+}
+
+export interface JournalEntry {
+  at: string;
+  text: string;
+}
+
+export interface BriefingSettings {
+  enabled: boolean;
+  time: string;
+}
+
+export interface TimezoneInfo {
+  timezone: string;
+  default: string;
+  custom: boolean;
+  now: string;
+}
+
+export interface Business {
+  name: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  tax_id: string | null;
 }

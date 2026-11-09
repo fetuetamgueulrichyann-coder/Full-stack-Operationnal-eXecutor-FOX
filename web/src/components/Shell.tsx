@@ -2,6 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import logo from "../assets/fox-logo.png";
 import { Icon, type IconName } from "./Icon";
+import { Reminders } from "./Reminders";
 
 const ITEMS: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/", label: "Discussion", icon: "chat", end: true },
@@ -12,7 +13,7 @@ const ITEMS: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/reglages", label: "Réglages", icon: "settings" },
 ];
 
-const MOBILE_ITEMS = ITEMS.slice(0, 5);
+const MOBILE_ITEMS = ITEMS; // sur mobile, les six pages (Réglages comprises) restent accessibles
 
 export function Shell() {
   const { state, logout } = useAuth();
@@ -47,6 +48,7 @@ export function Shell() {
         </div>
       </nav>
       <div className="content">
+        <Reminders />
         <Outlet />
       </div>
       <nav className="tabbar" aria-label="Navigation mobile">

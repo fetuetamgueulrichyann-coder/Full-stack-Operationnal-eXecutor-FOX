@@ -137,7 +137,7 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 
 | Route | Corps / paramètres | Réponse |
 |---|---|---|
-| `GET /events` 🔒 | `?range=aujourd'hui`, `demain`, `semaine` (défaut), `mois` | `{today, events: [{id, title, location, start, end, repeat?, occurrence?, tasks: [...]}]}`. Les séries sont développées en occurrences. |
+| `GET /events` 🔒 | `?range=aujourd'hui`, `demain`, `semaine` (défaut), `mois` | `{today, reminder_minutes, events: [{id, title, location, start, end, repeat?, occurrence?, tasks: [...]}]}`. Les séries sont développées en occurrences. |
 | `GET /events/<id>` 🔒 | | `{event}` |
 | `POST /events` 🔒✍️ | `text` (« Titre \| quand \| durée \| lieu \| répétition ») **ou** `title`, `start`, `duration`, `location`, `repeat`, `until` | `201` `{event, conflicts: [...]}`. Une série garde le fuseau de sa création. |
 | `PATCH /events/<id>` 🔒✍️ | champs à changer (`title`, `start`, `duration`, `location`, `repeat`, `until`) | `{event, conflicts}` |
@@ -156,10 +156,11 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `GET /clients/<id>` 🔒 | | `{client}` |
 | `PATCH /clients/<id>` 🔒✍️ | `text` (« téléphone ; e-mail ; adresse ») **ou** les champs à changer | `{client}`. 400 si rien à modifier. |
 | `DELETE /clients/<id>` 🔒✍️ | `{}` | `{status: "deleted"}` |
-| `GET /quotes` 🔒 | `?status=brouillon\|envoye\|accepte\|refuse` | `{quotes: [{id, number, status, status_label, client, total}]}` |
+| `GET /quotes` 🔒 | `?status=brouillon\|envoye\|accepte\|refuse`, `?archived=1` (devis archivés) | `{quotes: [{id, number, status, status_label, client, total, archived}]}` |
 | `POST /quotes` 🔒✍️ | `text` (texte libre du devis) | `201` `{quote}`. 409 si plusieurs clients correspondent ou limite atteinte. |
 | `GET /quotes/<ref>` 🔒 | `ref` : numéro `DV-2026-003` ou identifiant | `{quote: {number, status, client, currency, vat_rate, lines, subtotal, vat, total, amounts}}` |
-| `PATCH /quotes/<ref>` 🔒✍️ | `status` | `{quote}` |
+| `PATCH /quotes/<ref>` 🔒✍️ | `status` et/ou `archived` (booléen) | `{quote}` |
+| `GET /actions/pending` 🔒 | | `{actions: [{id, summary, expires_at}]}` : actions en attente de confirmation (non expirées). |
 | `DELETE /quotes/<ref>` 🔒✍️ | `{}` | `{status: "deleted"}`. 409 si le devis est envoyé ou accepté. |
 | `GET /quotes/<ref>/pdf` 🔒 | | Le fichier PDF (pas du JSON). |
 | `GET /quotes/<ref>/mail` 🔒 | | Brouillon d'e-mail au client. |

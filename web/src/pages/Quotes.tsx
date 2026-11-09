@@ -23,17 +23,18 @@ export function Quotes() {
   const [clients, setClients] = useState<Client[] | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
 
   const reload = useCallback(async () => {
     try {
-      const [q, c] = await Promise.all([api<{ quotes: QuoteSummary[] }>("/quotes"), api<{ clients: Client[] }>("/clients")]);
+      const [q, c] = await Promise.all([api<{ quotes: QuoteSummary[] }>(showArchived ? "/quotes?archived=1" : "/quotes"), api<{ clients: Client[] }>("/clients")]);
       setQuotes(q.quotes);
       setClients(c.clients);
       setError(null);
     } catch (e) {
       setError(describeError(e));
     }
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => {
     void reload();
@@ -51,7 +52,11 @@ export function Quotes() {
           <h2>Devis</h2>
           <button className="primary compact" onClick={() => setSelection({ kind: "new-quote" })}>Nouveau</button>
         </div>
-        {quotes?.length === 0 && <p className="muted small-text">Aucun devis.</p>}
+        <div className="segmented" role="group" aria-label="Filtrer les devis">
+          <button className={showArchived ? "seg" : "seg on"} aria-pressed={!showArchived} onClick={() => { setShowArchived(false); setSelection(null); }}>Actifs</button>
+          <button className={showArchived ? "seg on" : "seg"} aria-pressed={showArchived} onClick={() => { setShowArchived(true); setSelection(null); }}>Archivés</button>
+        </div>
+        {quotes?.length === 0 && <p className="muted small-text">{showArchived ? "Aucun devis archivé." : "Aucun devis."}</p>}
         {quotes?.map((q) => (
           <button key={q.id} className={selection?.kind === "quote" && selection.id === q.id ? "item on" : "item"} onClick={() => setSelection({ kind: "quote", id: q.id })}>
             <span className="item-top">
@@ -84,7 +89,7 @@ export function Quotes() {
           </div>
         )}
         {selection?.kind === "quote" && (
-          <QuoteDetail key={selection.id} id={selection.id} onChanged={reload} onDeleted={() => done(null)} />
+          <QuoteDetail key={selection.id} id={selection.id} onChanged={reload} onDeleted={() => done(null)} onArchived={() => done(null)} />
         )}
         {selection?.kind === "new-quote" && (
           <QuoteForm clients={clients ?? []} onCreated={(q) => done({ kind: "quote", id: q.id })} onClose={() => setSelection(null)} />
@@ -100,7 +105,7 @@ export function Quotes() {
   );
 }
 
-function QuoteDetail({ id, onChanged, onDeleted }: { id: number; onChanged: () => Promise<void>; onDeleted: () => void }) {
+function QuoteDetail({ id, onChanged, onDeleted, onArchived }: { id: number; onChanged: () => Promise<void>; onDeleted: () => void; onArchived: () => void }) {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mail, setMail] = useState<MailDraft | null>(null);
@@ -121,6 +126,16 @@ function QuoteDetail({ id, onChanged, onDeleted }: { id: number; onChanged: () =
       const d = await api<{ quote: Quote }>(`/quotes/${id}`, { method: "PATCH", body: { status } });
       setQuote(d.quote);
       await onChanged();
+    } catch (e) {
+      setError(describeError(e));
+    }
+  }
+
+  async function archive(archived: boolean) {
+    setError(null);
+    try {
+      await api(`/quotes/${id}`, { method: "PATCH", body: { archived } });
+      onArchived();
     } catch (e) {
       setError(describeError(e));
     }
@@ -199,8 +214,10 @@ function QuoteDetail({ id, onChanged, onDeleted }: { id: number; onChanged: () =
             Marquer {STATUS_NAME[s]}
           </button>
         ))}
+        <button className="secondary compact" onClick={() => void archive(!quote.archived)}>{quote.archived ? "Désarchiver" : "Archiver"}</button>
         <button className="secondary compact danger" onClick={() => void remove()}>Supprimer</button>
       </section>
+      {quote.archived && <p className="muted small-text">Ce devis est archivé : il n'apparaît plus dans la liste des devis actifs.</p>}
 
       {mail && (
         <section aria-label="Brouillon d'e-mail" className="mail-card">

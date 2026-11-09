@@ -168,7 +168,24 @@ def link_target(value):
         raise TaskInputError("Numéro de rendez-vous invalide.") from None
 
 
+QUOTE_REQUEST = re.compile(
+    r"^\s*(?:(?:faire|fais|créer|créé|creer|crée|cree|établir|établis|etablir|préparer|prépare|preparer|rédiger|rédige|"
+    r"rediger|générer|génère|generer)\s+)(?:(?:un|le|ce|mon|son)\s+)?devis\b",
+    re.IGNORECASE,
+)
+
+
+def refuse_quote_as_task(title):
+    """Une demande de devis n'est pas une tâche : le modèle doit utiliser creer_devis."""
+    if QUOTE_REQUEST.match(str(title or "")):
+        raise TaskInputError(
+            "Un devis ne se crée pas comme une tâche : utilise l'outil creer_devis avec le client et les lignes "
+            "« description | quantité | prix unitaire », ou demande à l'utilisateur ce qu'il faut facturer."
+        )
+
+
 def creer_tache(user_id, titre, priorite="normale", echeance=None, rdv_id=None):
+    refuse_quote_as_task(titre)
     due = parse_due(echeance) if echeance else None
     try:
         task = db.create_task(user_id, clean_title(titre), clean_priority(priorite), due, event_id=link_target(rdv_id))
@@ -201,6 +218,7 @@ def modifier_tache(user_id, tache_id, titre=None, priorite=None, echeance=None, 
 
 
 def describe_creer(args, user_id):
+    refuse_quote_as_task(args.get("titre"))
     lines = [f"Créer la tâche « {clean_title(args['titre'])} »"]
     if args.get("echeance"):
         lines.append(f"Échéance : {describe_due({'due_at': parse_due(args['echeance'])})}")

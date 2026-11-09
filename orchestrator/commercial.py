@@ -231,7 +231,8 @@ def public_quote(quote):
     result = totals(quote["lines"], quote["vat_rate"], currency)
     return {
         "id": quote["id"], "number": quote["number"], "status": quote["status"],
-        "status_label": STATUS_LABELS[quote["status"]], "client": quote["client_name"], "client_id": quote["client_id"], "currency": currency,
+        "status_label": STATUS_LABELS[quote["status"]], "archived": bool(quote.get("archived_at")),
+        "client": quote["client_name"], "client_id": quote["client_id"], "currency": currency,
         "vat_rate": format_rate(quote["vat_rate"]), "notes": quote["notes"],
         "created_at": quote["created_at"].isoformat(timespec="minutes") if quote.get("created_at") else None,
         "lines": [
@@ -249,7 +250,8 @@ def public_quote_summary(quote):
     currency = quote["currency"]
     return {
         "id": quote["id"], "number": quote["number"], "status": quote["status"],
-        "status_label": STATUS_LABELS[quote["status"]], "client": quote["client_name"],
+        "status_label": STATUS_LABELS[quote["status"]], "archived": bool(quote.get("archived_at")),
+        "client": quote["client_name"],
         "total": money(totals(quote["lines"], quote["vat_rate"], currency)["total"], currency),
         "created_at": quote["created_at"].isoformat(timespec="minutes") if quote.get("created_at") else None,
     }

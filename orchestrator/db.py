@@ -787,6 +787,18 @@ def create_pending(user_id, tool, args, summary, ttl_minutes):
         return str(cur.fetchone()[0])
 
 
+def list_pending(user_id, limit=10):
+    """Actions en attente de confirmation et non expirées, les plus récentes d'abord."""
+    with cursor() as cur:
+        cur.execute(
+            "SELECT id, summary, expires_at FROM pending_actions "
+            "WHERE user_id = %s AND status = 'pending' AND expires_at > now() "
+            "ORDER BY created_at DESC LIMIT %s",
+            (user_id, limit),
+        )
+        return [{"id": str(r[0]), "summary": r[1], "expires_at": r[2].isoformat(timespec="seconds")} for r in cur.fetchall()]
+
+
 def confirm_pending(action_id, user_id):
     """Passe l'action de 'pending' à 'confirmed' si elle est valide. Retourne (outil, args) ou None."""
     with cursor() as cur:
@@ -1019,14 +1031,14 @@ def delete_client(user_id, client_id):
         return cur.rowcount > 0
 
 
-_QUOTE_COLUMNS = "id, client_id, client_name, number, status, currency, vat_rate, notes, created_at, updated_at"
+_QUOTE_COLUMNS = "id, client_id, client_name, number, status, currency, vat_rate, notes, created_at, updated_at, archived_at"
 
 
 def _quote(row, lines=()):
     return {
         "id": row[0], "client_id": row[1], "client_name": row[2], "number": row[3], "status": row[4],
         "currency": row[5], "vat_rate": row[6], "notes": row[7], "created_at": row[8], "updated_at": row[9],
-        "lines": list(lines),
+        "archived_at": row[10], "lines": list(lines),
     }
 
 
@@ -1093,13 +1105,16 @@ def get_quote(user_id, ref):
         return _quote(row, _quote_lines(cur, [row[0]]).get(row[0], []))
 
 
-def list_quotes(user_id, status=None, limit=20):
-    """Devis récents d'abord, avec leurs lignes (pour calculer les totaux)."""
+def list_quotes(user_id, status=None, limit=20, archived=False):
+    """Devis récents d'abord, avec leurs lignes (pour calculer les totaux).
+
+    Par défaut les devis archivés sont exclus ; `archived=True` ne retourne que les devis archivés.
+    """
     with cursor() as cur:
         cur.execute(
             f"SELECT {_QUOTE_COLUMNS} FROM quotes WHERE user_id = %s AND (%s::text IS NULL OR status = %s) "  # noqa: S608
-            "ORDER BY created_at DESC, id DESC LIMIT %s",
-            (user_id, status, status, limit),
+            "AND (archived_at IS NOT NULL) = %s ORDER BY created_at DESC, id DESC LIMIT %s",
+            (user_id, status, status, archived, limit),
         )
         rows = cur.fetchall()
         grouped = _quote_lines(cur, [r[0] for r in rows]) if rows else {}
@@ -1114,6 +1129,20 @@ def set_quote_status(user_id, ref, status):
         cur.execute(
             "UPDATE quotes SET status = %s, updated_at = now() WHERE id = %s AND user_id = %s",
             (status, quote["id"], user_id),
+        )
+    return get_quote(user_id, quote["number"])
+
+
+def set_quote_archived(user_id, ref, archived):
+    """Archive ou désarchive un devis (quel que soit son statut). None si introuvable."""
+    quote = get_quote(user_id, ref)
+    if quote is None:
+        return None
+    with cursor() as cur:
+        cur.execute(
+            "UPDATE quotes SET archived_at = CASE WHEN %s THEN COALESCE(archived_at, now()) ELSE NULL END, "
+            "updated_at = now() WHERE id = %s AND user_id = %s",
+            (bool(archived), quote["id"], user_id),
         )
     return get_quote(user_id, quote["number"])
 

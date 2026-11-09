@@ -58,7 +58,22 @@ export function Chat() {
 
   const loadMessages = useCallback(async (chatId: number) => {
     const data = await api<{ messages: HistoryMessage[] }>(`/chats/${chatId}/messages`);
-    setBubbles(data.messages.map((m) => ({ id: m.id, role: m.role, text: m.text ?? "" })));
+    const history: Bubble[] = data.messages.map((m) => ({ id: m.id, role: m.role, text: m.text ?? "" }));
+    // Les actions encore en attente (le rechargement de la page ne doit pas les faire disparaître).
+    try {
+      const open = await api<{ actions: PendingAction[] }>("/actions/pending");
+      if (open.actions.length > 0) {
+        history.push({
+          id: nextId(),
+          role: "assistant",
+          text: open.actions.length > 1 ? "Ces actions attendent toujours votre confirmation :" : "Cette action attend toujours votre confirmation :",
+          actions: open.actions.map((p) => ({ ...p, state: "open" as const })),
+        });
+      }
+    } catch {
+      // Sans cette liste, la conversation reste utilisable.
+    }
+    setBubbles(history);
   }, []);
 
   // Au premier affichage : la liste des conversations, puis la conversation active s'il y en a une.
