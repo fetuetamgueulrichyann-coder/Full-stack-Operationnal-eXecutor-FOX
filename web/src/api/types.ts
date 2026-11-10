@@ -166,3 +166,58 @@ export interface Business {
   address: string | null;
   tax_id: string | null;
 }
+
+export type ProjectStatus = "en_cours" | "suspendu" | "termine";
+
+export interface Project {
+  id: number;
+  name: string;
+  status: ProjectStatus;
+  status_label: string;
+  client_id: number | null;
+  client: string | null;
+  quote: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  notes: string | null;
+  archived: boolean;
+  currency: string;
+  income: string;
+  income_label: string;
+  expense: string;
+  expense_label: string;
+  margin: string;
+  margin_label: string;
+  budget: string | null;
+  budget_label: string | null;
+  budget_left: string | null;
+  budget_left_label: string | null;
+  budget_used_percent: number | null;
+}
+
+export interface LedgerEntry {
+  id: number;
+  kind: "recette" | "depense";
+  kind_label: string;
+  amount: string;
+  amount_label: string;
+  currency: string;
+  date: string;
+  category: string | null;
+  description: string;
+  project_id: number | null;
+  project: string | null;
+}
+
+export interface LedgerSummary {
+  month: string;
+  currency: string;
+  income: string;
+  income_label: string;
+  expense: string;
+  expense_label: string;
+  balance: string;
+  balance_label: string;
+  entries: number;
+  by_category: { kind: "recette" | "depense"; category: string; total: string; total_label: string }[];
+}

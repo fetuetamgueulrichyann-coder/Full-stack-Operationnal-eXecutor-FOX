@@ -9,11 +9,12 @@ const ITEMS: { to: string; label: string; icon: IconName; end?: boolean }[] = [
   { to: "/agenda", label: "Agenda", icon: "agenda" },
   { to: "/taches", label: "Tâches", icon: "tasks" },
   { to: "/devis", label: "Clients et devis", icon: "quotes" },
+  { to: "/chantiers", label: "Chantiers", icon: "site" },
   { to: "/prive", label: "Vie privée", icon: "privacy" },
   { to: "/reglages", label: "Réglages", icon: "settings" },
 ];
 
-const MOBILE_ITEMS = ITEMS; // sur mobile, les six pages (Réglages comprises) restent accessibles
+const MOBILE_ITEMS = ITEMS; // sur mobile, toutes les pages (Réglages comprises) restent accessibles
 
 export function Shell() {
   const { state, logout } = useAuth();

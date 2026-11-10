@@ -14,6 +14,7 @@ import db
 import memory
 import agenda_tools  # noqa: F401  (enregistre les outils de l'agenda interne)
 import commercial_tools  # noqa: F401  (enregistre les outils des clients et des devis)
+import finance_tools  # noqa: F401  (enregistre les outils des chantiers et de la comptabilité)
 import tasks  # noqa: F401  (enregistre les outils de tâches)
 from tools import IRREVERSIBLE, REGISTRY, Tool, register, tz, tz_name
 
@@ -88,6 +89,10 @@ PROMPT_WITH_TOOLS = (
     "utilise creer_devis (jamais une tâche), avec une ligne « description | quantité | prix unitaire » par article ; "
     "ne calcule aucun total toi-même, FOX les calcule. Si l'utilisateur ne dit pas ce qu'il faut facturer "
     "(désignation, quantité ou prix), pose-lui la question au lieu d'inventer. "
+    "Les chantiers et la comptabilité se gèrent avec lister_chantiers, creer_chantier, modifier_chantier "
+    "(un chantier ne se supprime pas, il s'archive), enregistrer_ecriture (recette = argent reçu, dépense = argent "
+    "dépensé), lister_ecritures et bilan : ne calcule aucun total toi-même, FOX les calcule ; si le montant ou le "
+    "type (recette ou dépense) n'est pas clair, demande-le. Ce n'est jamais une tâche. "
     "Si une demande dépasse tes outils (par exemple générer un PDF ou envoyer un e-mail), dis-le simplement et "
     "indique que c'est possible dans la page Clients et devis, sans créer de tâche à la place. "
     "Les actions d'écriture sont soumises à la confirmation de l'utilisateur : "

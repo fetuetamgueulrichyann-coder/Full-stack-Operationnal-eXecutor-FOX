@@ -9,6 +9,7 @@ import { Privacy } from "./pages/Privacy";
 import { Quotes } from "./pages/Quotes";
 import { Register } from "./pages/Register";
 import { Settings } from "./pages/Settings";
+import { Sites } from "./pages/Sites";
 import { Tasks } from "./pages/Tasks";
 
 /** Pages réservées aux utilisateurs connectés ; l'attente et l'échec réseau passent par l'écran de chargement. */
@@ -42,6 +43,7 @@ export function AppRoutes() {
           <Route path="/agenda" element={<Agenda />} />
           <Route path="/taches" element={<Tasks />} />
           <Route path="/devis" element={<Quotes />} />
+          <Route path="/chantiers" element={<Sites />} />
           <Route path="/prive" element={<Privacy />} />
           <Route path="/reglages" element={<Settings />} />
         </Route>

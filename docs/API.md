@@ -162,6 +162,14 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `GET /quotes/<ref>` 🔒 | `ref` : numéro `DV-2026-003` ou identifiant | `{quote: {number, status, client, currency, vat_rate, lines, subtotal, vat, total, amounts}}` |
 | `PATCH /quotes/<ref>` 🔒✍️ | `status` et/ou `archived` (booléen) | `{quote}` |
 | `GET /actions/pending` 🔒 | | `{actions: [{id, summary, expires_at}]}` : actions en attente de confirmation (non expirées). |
+| `GET /projects` 🔒 | `?status=en_cours\|suspendu\|termine`, `?archived=1` | `{projects: [{id, name, status, status_label, client, quote, budget, income, expense, margin, budget_left, budget_used_percent, archived, …_label}]}` (montants en chaînes décimales, plus une version `_label` formatée). |
+| `POST /projects` 🔒✍️ | `name` (requis), `client`, `quote` (numéro de devis), `budget`, `start_date`, `end_date`, `notes` | `201 {project}` ; `409` si le nom existe ou si la limite (`MAX_PROJECTS`) est atteinte. |
+| `GET /projects/<id>` 🔒 | | `{project}` ou `404`. |
+| `PATCH /projects/<id>` 🔒✍️ | `status`, `budget` (vide = aucun), `start_date`, `end_date`, `notes`, `archived` (booléen) | `{project}`. Il n'y a pas de `DELETE` : un chantier s'archive. |
+| `GET /ledger` 🔒 | `?month=AAAA-MM` (défaut : mois courant, `all` = tout), `kind=recette\|depense`, `project=<id>` | `{month, entries: [{id, kind, amount, amount_label, date, category, description, project_id, project}]}`. |
+| `GET /ledger/summary` 🔒 | `?month=AAAA-MM`, `project=<id>` | `{summary: {month, income, expense, balance, entries, by_category: […]}}` (+ `_label`). |
+| `POST /ledger` 🔒✍️ | `kind` (recette ou dépense), `amount` (> 0), `description` (requis), `category`, `date` (AAAA-MM-JJ, défaut aujourd'hui), `project` (numéro) | `201 {entry}` ; `404` si le chantier n'existe pas pour cet utilisateur. |
+| `DELETE /ledger/<id>` 🔒✍️ | | `{status: "deleted"}` ou `404`. |
 | `DELETE /quotes/<ref>` 🔒✍️ | `{}` | `{status: "deleted"}`. 409 si le devis est envoyé ou accepté. |
 | `GET /quotes/<ref>/pdf` 🔒 | | Le fichier PDF (pas du JSON). |
 | `GET /quotes/<ref>/mail` 🔒 | | Brouillon d'e-mail au client. |

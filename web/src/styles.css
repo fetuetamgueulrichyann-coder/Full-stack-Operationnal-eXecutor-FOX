@@ -272,6 +272,28 @@ h1, h2 { margin: 0; }
 @keyframes micpulse { 50% { box-shadow: 0 0 0 6px rgba(194, 65, 12, 0.18); } }
 @media (prefers-reduced-motion: reduce) { .mic.on { animation: none; } }
 
+/* --- Chantiers et compta ------------------------------------------------- */
+.sites { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sites-tabs { padding: 16px 40px 0; }
+.status.site-en_cours { background: #dff0f6; color: #1d5c74; }
+.status.site-suspendu { background: #fff1c2; color: #7a4b00; }
+.status.site-termine { background: #d8f3e1; color: #14532d; }
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; max-width: 900px; }
+.metric { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.metric span { font-size: 13px; color: var(--muted); font-weight: 600; }
+.metric strong { font-size: 18px; font-weight: 800; }
+.budget { max-width: 900px; display: flex; flex-direction: column; gap: 6px; }
+.bar { height: 10px; border-radius: 999px; background: #e8edf1; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--accent); }
+.bar .fill.over { background: var(--danger, #b42318); }
+.section-title { margin: 8px 0; font-size: 16px; font-weight: 800; }
+.entries, .categories { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-width: 900px; }
+.entries li, .categories li { display: flex; align-items: center; gap: 12px; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+.entries li > span:nth-child(2), .categories li > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.entries .in { color: #14532d; }
+.entries .out { color: #b42318; }
+.f.month { flex-direction: column; gap: 4px; }
+
 /* --- Rappels ------------------------------------------------------------- */
 .reminders { position: fixed; top: 16px; right: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px; max-width: min(360px, calc(100vw - 32px)); }
 .reminder { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; background: #fff; border: 1px solid var(--line, #d8e0e6); border-left: 4px solid var(--accent, #e8710a); border-radius: 12px; padding: 12px 14px; box-shadow: 0 6px 20px rgba(20, 40, 60, .15); }
@@ -285,6 +307,7 @@ h1, h2 { margin: 0; }
   .tab { flex: 1; min-width: 0; min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--muted); font-size: 11px; font-weight: 700; text-decoration: none; }
   .tab.on { color: var(--accent-dark); }
   .page { padding: 24px 16px; }
+  .sites-tabs { padding: 12px 16px 0; }
   .chat-main { padding: 12px 16px; }
   .list-toggle { display: flex; }
   .chat-list { position: absolute; z-index: 5; inset: 0 0 62px 0; width: auto; background: var(--ground); display: none; }

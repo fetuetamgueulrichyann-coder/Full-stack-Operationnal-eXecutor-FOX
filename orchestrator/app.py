@@ -20,6 +20,8 @@ import mail
 import memory
 import agenda
 import commercial
+import finance
+import finance_store
 import quote_pdf
 import tasks
 import timezones
@@ -1118,6 +1120,168 @@ def timezone_set():
     user = {**user, "timezone": name}
     tools.set_user_zone(name)
     return jsonify(zone_payload(user))
+
+
+# --- Chantiers et comptabilité (phase F) ------------------------------------------------------
+def _today():
+    return datetime.now(tools.tz()).date()
+
+
+def _project_json(project):
+    return finance.public_project(project)
+
+
+@app.get("/projects")
+def projects_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        status = finance.clean_status(request.args["status"]) if request.args.get("status") else None
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    archived = request.args.get("archived") in ("1", "true")
+    items = finance_store.list_projects(user["id"], status, archived)
+    return jsonify(projects=[_project_json(p) for p in items])
+
+
+@app.post("/projects")
+def projects_create():
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    try:
+        fields = finance_store.new_project_fields(
+            user["id"], data.get("name"), data.get("client"), data.get("quote"), data.get("budget"),
+            data.get("start_date"), data.get("end_date"), data.get("notes"), _today(),
+        )
+        project = finance_store.create_project(user["id"], **fields)
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    except finance_store.DuplicateProject:
+        return jsonify(error="Un chantier porte déjà ce nom."), 409
+    except finance_store.ProjectLimit as exc:
+        return jsonify(error=f"Limite de {exc.args[0]} chantiers atteinte."), 409
+    db.audit(user["id"], "project_created", None, {"project_id": project["id"]})
+    return jsonify(project=_project_json(project)), 201
+
+
+@app.get("/projects/<int:project_id>")
+def projects_get(project_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    project = finance_store.get_project(user["id"], project_id)
+    if project is None:
+        return jsonify(error="chantier introuvable"), 404
+    return jsonify(project=_project_json(project))
+
+
+@app.patch("/projects/<int:project_id>")
+def projects_update(project_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    today = _today()
+    changes = {}
+    try:
+        if "archived" in data:
+            if not isinstance(data["archived"], bool):
+                return jsonify(error="archived doit être true ou false"), 400
+            changes["archived"] = data["archived"]
+        if "status" in data:
+            changes["status"] = finance.clean_status(data["status"])
+        if "budget" in data:
+            changes["budget"] = finance.parse_budget(data["budget"])
+        for key in ("start_date", "end_date"):
+            if key in data:
+                changes[key] = finance.parse_optional_date(data[key], today)
+        if "notes" in data:
+            changes["notes"] = finance.clean_text(data["notes"], "La note", finance.NOTES_MAX)
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    if not changes:
+        return jsonify(error="Rien à modifier."), 400
+    project = finance_store.update_project(user["id"], project_id, changes)
+    if project is None:
+        return jsonify(error="chantier introuvable"), 404
+    event = "project_archived" if changes.get("archived") is True else "project_unarchived" if changes.get("archived") is False else "project_updated"
+    db.audit(user["id"], event, None, {"project_id": project_id})
+    return jsonify(project=_project_json(project))
+
+
+def _int_arg(name):
+    value = request.args.get(name)
+    return int(value) if value and value.isdigit() else None
+
+
+@app.get("/ledger")
+def ledger_list():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        if request.args.get("month") == "all":  # toutes les écritures (fiche d'un chantier)
+            start, end, month = None, None, "all"
+        else:
+            start, end, month = finance.parse_month(request.args.get("month"), _today())
+        kind = finance.clean_kind(request.args["kind"]) if request.args.get("kind") else None
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    entries = finance_store.list_entries(user["id"], start, end, kind, _int_arg("project"))
+    return jsonify(month=month, entries=[finance.public_entry(e) for e in entries])
+
+
+@app.get("/ledger/summary")
+def ledger_summary():
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        start, end, month = finance.parse_month(request.args.get("month"), _today())
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    summary = finance_store.summary(user["id"], start, end, _int_arg("project"))
+    return jsonify(summary=finance.public_summary(summary, month))
+
+
+@app.post("/ledger")
+def ledger_create():
+    user, error = chat_auth()
+    if error:
+        return error
+    data = body()
+    project_id = data.get("project")
+    if project_id is not None and (not isinstance(project_id, int) or isinstance(project_id, bool)):
+        return jsonify(error="project doit être le numéro du chantier"), 400
+    try:
+        entry = finance_store.add_entry(
+            user["id"], finance.clean_kind(data.get("kind")), finance.parse_entry_amount(data.get("amount")),
+            commercial.DEFAULT_CURRENCY, finance.parse_date(data.get("date"), _today()),
+            finance.clean_text(data.get("description"), "La description", finance.DESC_MAX, required=True),
+            finance.clean_text(data.get("category"), "La catégorie", finance.CATEGORY_MAX), project_id,
+        )
+    except commercial.CommercialInputError as exc:
+        return input_error(exc)
+    except LookupError:
+        return jsonify(error="chantier introuvable"), 404
+    except finance_store.LedgerLimit as exc:
+        return jsonify(error=f"Limite de {exc.args[0]} écritures atteinte."), 409
+    db.audit(user["id"], "ledger_entry_added", None, {"entry_id": entry["id"], "kind": entry["kind"]})
+    return jsonify(entry=finance.public_entry(entry)), 201
+
+
+@app.delete("/ledger/<int:entry_id>")
+def ledger_delete(entry_id):
+    user, error = chat_auth()
+    if error:
+        return error
+    if not finance_store.delete_entry(user["id"], entry_id):
+        return jsonify(error="écriture introuvable"), 404
+    db.audit(user["id"], "ledger_entry_deleted", None, {"entry_id": entry_id})
+    return jsonify(status="deleted")
 
 
 # --- E-mails ---------------------------------------------------------------------
