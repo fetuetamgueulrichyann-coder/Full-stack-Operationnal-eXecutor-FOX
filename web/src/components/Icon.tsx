@@ -19,6 +19,9 @@ const PATHS = {
   more: "M5 12h.01M12 12h.01M19 12h.01",
   site: "M3 21h18M5 21V9l7-5 7 5v12M9 21v-6h6v6",
   mic: "M9 4a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 11a7 7 0 0 0 14 0M12 18v3",
+  speaker: "M11 5 6 9H3v6h3l5 4zM15.5 9a4 4 0 0 1 0 6M18.5 6a8 8 0 0 1 0 12",
+  wave: "M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4",
+  stop: "M6 6h12v12H6z",
 } as const;
 
 export type IconName = keyof typeof PATHS;

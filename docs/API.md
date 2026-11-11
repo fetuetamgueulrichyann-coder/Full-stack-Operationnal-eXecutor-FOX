@@ -174,6 +174,8 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `POST /push/subscribe` 🔒✍️ | `endpoint`, `keys: {p256dh, auth}` (l'abonnement du navigateur) | `201 {status, devices}` ; `400` si l'adresse n'est pas celle d'un service de push connu (HTTPS) ; `409` si non configuré ou limite (`MAX_PUSH_DEVICES`) atteinte. |
 | `POST /push/unsubscribe` 🔒✍️ | `endpoint` | `{status, devices}` (ne retire que les appareils de l'utilisateur). |
 | `POST /push/test` 🔒✍️ | | `{sent}` : envoie une notification de test à ses appareils ; `404` s'il n'en a aucun. |
+| `GET /voice/config` 🔒 | | `{enabled, voice, daily_limit, used}` : la voix est-elle disponible, et combien de caractères reste-t-il aujourd'hui. |
+| `POST /voice/speak` 🔒✍️ | `text` | Réponse `audio/wav` (le texte est nettoyé : sans Markdown, code ni adresses, 1 200 caractères au plus). `400` texte vide ; `409` voix désactivée ; `429` plafond du jour (`voice_quota`) ; `502` synthèse indisponible (`voice_unavailable`, caractères rendus). Rien n'est enregistré, même en mode privé. |
 | `DELETE /quotes/<ref>` 🔒✍️ | `{}` | `{status: "deleted"}`. 409 si le devis est envoyé ou accepté. |
 | `GET /quotes/<ref>/pdf` 🔒 | | Le fichier PDF (pas du JSON). |
 | `GET /quotes/<ref>/mail` 🔒 | | Brouillon d'e-mail au client. |

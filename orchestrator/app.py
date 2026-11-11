@@ -29,6 +29,7 @@ import tools
 import prodcheck
 import push_delivery
 import push_store
+import speech
 import webpush
 import websecurity
 
@@ -45,6 +46,9 @@ OWNER_MAX_CALLS_PER_DAY = int(os.environ.get("OWNER_MAX_CALLS_PER_DAY", "200"))
 OWNER_MAX_TOKENS_PER_DAY = int(os.environ.get("OWNER_MAX_TOKENS_PER_DAY", "500000"))
 TESTER_MAX_CALLS_PER_DAY = int(os.environ.get("TESTER_MAX_CALLS_PER_DAY", "30"))
 TESTER_MAX_TOKENS_PER_DAY = int(os.environ.get("TESTER_MAX_TOKENS_PER_DAY", "15000"))
+# Voix de FOX : caractères lus à voix haute par jour et par utilisateur.
+OWNER_VOICE_CHARS_PER_DAY = int(os.environ.get("OWNER_VOICE_CHARS_PER_DAY", "40000"))
+TESTER_VOICE_CHARS_PER_DAY = int(os.environ.get("TESTER_VOICE_CHARS_PER_DAY", "4000"))
 
 # Jeton partagé entre l'orchestrateur et le bot Telegram (service interne de confiance).
 SERVICE_TOKEN = os.environ.get("FOX_SERVICE_TOKEN", "").strip()
@@ -1412,3 +1416,45 @@ def mail_summary():
         return error
     user, result = done
     return jsonify(summary=result["summary"], pending=mail.propose_tasks(user["id"], result["tasks"]))
+
+
+# --- Voix de FOX (conversation orale) ---------------------------------------------------------
+def voice_limit(role):
+    return OWNER_VOICE_CHARS_PER_DAY if role == accounts.ROLE_OWNER else TESTER_VOICE_CHARS_PER_DAY
+
+
+@app.get("/voice/config")
+def voice_config():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(
+        enabled=speech.enabled(), voice=speech.voice_name(),
+        daily_limit=voice_limit(user["role"]), used=db.voice_used(user["id"]),
+    )
+
+
+@app.post("/voice/speak")
+def voice_speak():
+    """Lit un texte à voix haute : renvoie un fichier son (WAV). Rien n'est enregistré, même en mode privé."""
+    data = body()
+    user, error = authenticate(data)
+    if error:
+        return error
+    if not speech.enabled():
+        return jsonify(error="la voix est désactivée", code="voice_disabled"), 409
+    text = data.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return jsonify(error="text est requis"), 400
+    spoken = speech.clean_for_speech(text)
+    if not spoken:
+        return jsonify(error="rien à lire"), 400
+    if not db.reserve_voice_chars(user["id"], len(spoken), voice_limit(user["role"])):
+        return jsonify(error="plafond de voix atteint pour aujourd'hui", code="voice_quota"), 429
+    try:
+        audio = speech.synthesize(spoken)
+    except speech.SpeechError as exc:
+        db.release_voice_chars(user["id"], len(spoken))
+        log.warning("synthèse vocale échouée (%s) : %s", exc.code, exc.message)
+        return jsonify(error="la voix est indisponible pour le moment", code="voice_unavailable"), 502
+    return Response(audio, mimetype="audio/wav", headers={"Cache-Control": "no-store"})

@@ -1469,3 +1469,42 @@ def _with_linked_tasks(reminders):
             )
             reminder["tasks"] = [r[0] for r in cur.fetchall()]
     return reminders
+
+
+# --- Voix (synthèse vocale) ---------------------------------------------------------------
+def voice_used(user_id):
+    """Caractères déjà envoyés à la synthèse vocale aujourd'hui (UTC)."""
+    with cursor() as cur:
+        cur.execute(
+            "SELECT chars FROM voice_usage WHERE user_id = %s AND day = (now() AT TIME ZONE 'utc')::date",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    return row[0] if row else 0
+
+
+def reserve_voice_chars(user_id, chars, limit):
+    """Réserve `chars` caractères pour aujourd'hui. Retourne False (sans rien compter) si le plafond serait dépassé."""
+    if chars > limit:
+        return False
+    with cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO voice_usage (user_id, day, chars)
+            VALUES (%s, (now() AT TIME ZONE 'utc')::date, %s)
+            ON CONFLICT (user_id, day) DO UPDATE SET chars = voice_usage.chars + EXCLUDED.chars
+            WHERE voice_usage.chars + EXCLUDED.chars <= %s
+            RETURNING chars
+            """,
+            (user_id, chars, limit),
+        )
+        return cur.fetchone() is not None
+
+
+def release_voice_chars(user_id, chars):
+    """Rend les caractères réservés quand la synthèse a échoué."""
+    with cursor() as cur:
+        cur.execute(
+            "UPDATE voice_usage SET chars = GREATEST(chars - %s, 0) WHERE user_id = %s AND day = (now() AT TIME ZONE 'utc')::date",
+            (chars, user_id),
+        )

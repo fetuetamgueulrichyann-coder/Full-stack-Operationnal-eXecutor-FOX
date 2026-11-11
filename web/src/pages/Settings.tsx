@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { describeError } from "../api/errors";
 import type { BriefingSettings, Business, TimezoneInfo } from "../api/types";
+import { Markdown } from "../components/Markdown";
 import { NotificationsCard } from "../components/NotificationsCard";
 import { useAuth } from "../auth/AuthContext";
 import { timeOf } from "../lib/dates";
@@ -146,7 +147,7 @@ export function Settings() {
             <button className="primary compact" disabled={!briefing} onClick={() => void saveBriefing(briefing?.enabled ?? false)}>Enregistrer l'heure</button>
             <button className="secondary compact" onClick={() => void showPreview()}>Voir l'aperçu</button>
           </div>
-          {preview !== null && <pre className="preview" aria-label="Aperçu du briefing">{preview}</pre>}
+          {preview !== null && <div className="preview" role="group" aria-label="Aperçu du briefing"><Markdown text={preview} /></div>}
         </section>
 
         <section className="card span" aria-label="Profil d'entreprise">

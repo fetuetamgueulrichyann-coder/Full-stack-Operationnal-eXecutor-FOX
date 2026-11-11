@@ -119,14 +119,16 @@ describe("Réglages", () => {
   it("désactive le briefing et affiche l'aperçu", async () => {
     const { calls } = mockApi(settingsRoutes({
       "POST /briefing": () => ({ body: { enabled: false, time: "07:30" } }),
-      "GET /briefing/preview": () => ({ body: { text: "Bonjour, voici votre journée." } }),
+      "GET /briefing/preview": () => ({ body: { text: "**Briefing du mercredi 11/11**\n\nBonjour, voici votre journée." } }),
     }));
     open("/reglages");
     await userEvent.click(await screen.findByRole("switch", { name: "Briefing du matin" }));
     await waitFor(() => expect(calls.some((c) => c.path === "/briefing" && c.method === "POST")).toBe(true));
     expect(calls.find((c) => c.path === "/briefing" && c.method === "POST")?.body).toEqual({ enabled: false, time: "07:30" });
     await userEvent.click(screen.getByRole("button", { name: "Voir l'aperçu" }));
-    expect(await screen.findByLabelText("Aperçu du briefing")).toHaveTextContent("Bonjour, voici votre journée.");
+    expect(await screen.findByLabelText("Aperçu du briefing")).toHaveTextContent("Briefing du mercredi 11/11");
+    expect(screen.getByLabelText("Aperçu du briefing")).toHaveTextContent("Bonjour, voici votre journée.");
+    expect(screen.getByLabelText("Aperçu du briefing")).not.toHaveTextContent("**");
   });
 
   it("envoie le profil d'entreprise au format attendu, sans point-virgule dans les champs", async () => {

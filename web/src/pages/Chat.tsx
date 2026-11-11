@@ -5,6 +5,7 @@ import type { ChatsResponse, ChatSummary, HistoryMessage, MessageResponse, Pendi
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { useDictation } from "../lib/dictation";
+import { useVoice } from "../lib/voice";
 import logo from "../assets/fox-logo.png";
 
 const REPLY_TIMEOUT_MS = 60_000; // le serveur coupe à 120 s ; on abandonne avant
@@ -47,7 +48,17 @@ export function Chat() {
   const [lastText, setLastText] = useState("");
   const [showList, setShowList] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
-  const dictation = useDictation((spoken) => setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken)));
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [listenId, setListenId] = useState<string | null>(null);
+  const voiceModeRef = useRef(false);
+  const sendRef = useRef<(message: string) => Promise<void>>(async () => undefined);
+  const voice = useVoice();
+  const dictation = useDictation((spoken) => {
+    // En conversation orale, ce qui est dit part tout de suite ; sinon, le texte attend dans le champ.
+    if (voiceModeRef.current) void sendRef.current(spoken);
+    else setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken));
+  });
 
   const title = chats.find((c) => c.id === activeId);
 
@@ -94,6 +105,18 @@ export function Chat() {
       cancelled = true;
     };
   }, [refreshChats, loadMessages]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ enabled: boolean }>("/voice/config")
+      .then((data) => {
+        if (!cancelled) setVoiceEnabled(data.enabled === true);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
@@ -180,6 +203,11 @@ export function Chat() {
       ]);
       setLastText("");
       void refreshChats().catch(() => undefined);
+      if (voiceModeRef.current) {
+        // Conversation orale : FOX répond à voix haute, puis écoute de nouveau (sauf s'il attend une confirmation).
+        const finished = await voice.play(data.reply);
+        if (finished && voiceModeRef.current && data.pending.length === 0) dictation.start();
+      }
     } catch (e) {
       // Le message a peut-être été traité : on garde le texte pour « Réessayer » sans le perdre.
       setError(describeError(e));
@@ -210,6 +238,32 @@ export function Chat() {
       update("open");
       setError(describeError(e));
     }
+  }
+
+  sendRef.current = send;
+
+  function toggleVoiceMode() {
+    if (voiceMode) {
+      voiceModeRef.current = false;
+      setVoiceMode(false);
+      voice.stop();
+      dictation.stop();
+      return;
+    }
+    voiceModeRef.current = true;
+    setVoiceMode(true);
+    dictation.start();
+  }
+
+  async function listen(bubble: Bubble) {
+    if (listenId === bubble.id) {
+      voice.stop();
+      setListenId(null);
+      return;
+    }
+    setListenId(bubble.id);
+    await voice.play(bubble.text);
+    setListenId((current) => (current === bubble.id ? null : current));
   }
 
   function onSubmit(event: FormEvent) {
@@ -290,6 +344,18 @@ export function Chat() {
                 <img src={logo} alt="FOX" width={32} />
                 <div className="assistant-body">
                   <div className="bubble-text"><Markdown text={bubble.text} /></div>
+                  {voiceEnabled && bubble.text && (
+                    <button
+                      type="button"
+                      className="listen-btn"
+                      aria-label={listenId === bubble.id ? "Arrêter la lecture" : "Écouter la réponse"}
+                      disabled={voice.state === "loading" && listenId === bubble.id}
+                      onClick={() => void listen(bubble)}
+                    >
+                      <Icon name={listenId === bubble.id && voice.state !== "idle" ? "stop" : "speaker"} size={16} />
+                      {listenId === bubble.id && voice.state === "loading" ? "Préparation…" : listenId === bubble.id && voice.state === "playing" ? "Arrêter" : "Écouter"}
+                    </button>
+                  )}
                   {bubble.actions?.map((action) => (
                     <ActionCard key={action.id} action={action} onDecide={(accept) => void decide(bubble.id, action.id, accept)} />
                   ))}
@@ -324,6 +390,14 @@ export function Chat() {
         )}
 
         <form className="composer" onSubmit={onSubmit} aria-label="Écrire à FOX">
+          {voiceMode && (
+            <div className="voice-bar" role="status">
+              <span className="wave"><Icon name="wave" size={18} /></span>
+              <span>
+                {voice.state === "loading" ? "FOX prépare sa réponse…" : voice.state === "playing" ? "FOX parle…" : sending ? "FOX réfléchit…" : dictation.listening ? "Je vous écoute, parlez…" : "Conversation orale active"}
+              </span>
+            </div>
+          )}
           <div className="composer-box">
             <label htmlFor="message" className="sr-only">
               Message
@@ -337,6 +411,17 @@ export function Chat() {
               value={text}
               onChange={(e) => setText(e.target.value)}
             />
+            {dictation.supported && voiceEnabled && (
+              <button
+                type="button"
+                className={voiceMode ? "voice-toggle on" : "voice-toggle"}
+                aria-label={voiceMode ? "Arrêter la conversation orale" : "Démarrer la conversation orale"}
+                aria-pressed={voiceMode}
+                onClick={toggleVoiceMode}
+              >
+                <Icon name="wave" />
+              </button>
+            )}
             {dictation.supported && (
               <button
                 type="button"
@@ -353,6 +438,7 @@ export function Chat() {
             </button>
           </div>
           {dictation.problem && <span className="banner error" role="alert">{dictation.problem}</span>}
+          {voice.problem && <span className="banner error" role="alert">{voice.problem}</span>}
           <span className="muted small-text">Les actions importantes demandent toujours votre confirmation.</span>
         </form>
       </main>
