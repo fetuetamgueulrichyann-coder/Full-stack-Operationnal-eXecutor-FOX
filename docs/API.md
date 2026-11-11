@@ -170,6 +170,10 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `GET /ledger/summary` 🔒 | `?month=AAAA-MM`, `project=<id>` | `{summary: {month, income, expense, balance, entries, by_category: […]}}` (+ `_label`). |
 | `POST /ledger` 🔒✍️ | `kind` (recette ou dépense), `amount` (> 0), `description` (requis), `category`, `date` (AAAA-MM-JJ, défaut aujourd'hui), `project` (numéro) | `201 {entry}` ; `404` si le chantier n'existe pas pour cet utilisateur. |
 | `DELETE /ledger/<id>` 🔒✍️ | | `{status: "deleted"}` ou `404`. |
+| `GET /push/config` 🔒 | | `{enabled, public_key, devices}` : notifications configurées (clés VAPID) et nombre d'appareils de l'utilisateur. |
+| `POST /push/subscribe` 🔒✍️ | `endpoint`, `keys: {p256dh, auth}` (l'abonnement du navigateur) | `201 {status, devices}` ; `400` si l'adresse n'est pas celle d'un service de push connu (HTTPS) ; `409` si non configuré ou limite (`MAX_PUSH_DEVICES`) atteinte. |
+| `POST /push/unsubscribe` 🔒✍️ | `endpoint` | `{status, devices}` (ne retire que les appareils de l'utilisateur). |
+| `POST /push/test` 🔒✍️ | | `{sent}` : envoie une notification de test à ses appareils ; `404` s'il n'en a aucun. |
 | `DELETE /quotes/<ref>` 🔒✍️ | `{}` | `{status: "deleted"}`. 409 si le devis est envoyé ou accepté. |
 | `GET /quotes/<ref>/pdf` 🔒 | | Le fichier PDF (pas du JSON). |
 | `GET /quotes/<ref>/mail` 🔒 | | Brouillon d'e-mail au client. |

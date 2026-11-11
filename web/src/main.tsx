@@ -12,8 +12,8 @@ createRoot(document.getElementById("root") as HTMLElement).render(
   </StrictMode>,
 );
 
-// Application installable : le service worker n'est actif qu'en production (pas avec le serveur de développement).
-if (import.meta.env.PROD && "serviceWorker" in navigator) {
+// Application installable : le service worker est actif en production (et en développement si VITE_ENABLE_SW=1, pour tester les notifications).
+if ((import.meta.env.PROD || import.meta.env.VITE_ENABLE_SW === "1") && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").catch(() => undefined);
   });

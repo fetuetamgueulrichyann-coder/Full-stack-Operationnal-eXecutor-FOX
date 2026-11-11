@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { describeError } from "../api/errors";
 import type { BriefingSettings, Business, TimezoneInfo } from "../api/types";
+import { NotificationsCard } from "../components/NotificationsCard";
 import { useAuth } from "../auth/AuthContext";
 import { timeOf } from "../lib/dates";
 
@@ -99,7 +100,7 @@ export function Settings() {
     <main className="page wide-page">
       <header className="stack">
         <h1>Réglages</h1>
-        <span className="muted small-text">Fuseau horaire, briefing du matin, entreprise et compte.</span>
+        <span className="muted small-text">Fuseau horaire, notifications, briefing du matin, entreprise et compte.</span>
       </header>
       {error && <div className="banner error" role="alert">{error}</div>}
       {notice && <div className="banner info" role="status">{notice}</div>}
@@ -120,6 +121,8 @@ export function Settings() {
             <div><button type="submit" className="primary compact" disabled={!zone}>Enregistrer</button></div>
           </form>
         </section>
+
+        <NotificationsCard />
 
         <section className="card" aria-label="Briefing du matin">
           <div className="row-between">

@@ -521,6 +521,7 @@ def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, stat
             sets.append("due_time = %s")
             values.append(has_time(due_at))
             sets.append("reminded_at = NULL")  # nouvelle échéance : nouveau rappel
+            sets.append("push_reminded_at = NULL")
         if event_id is not _UNSET:
             if event_id is not None:
                 _check_event_owner(cur, user_id, event_id)
@@ -532,6 +533,7 @@ def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, stat
             sets.append("done_at = now()" if status == "terminee" else "done_at = NULL")
             if status in OPEN_STATUSES and current[0] in CLOSED_STATUSES:
                 sets.append("reminded_at = NULL")  # tâche rouverte : rappel de nouveau possible
+                sets.append("push_reminded_at = NULL")
         cur.execute(
             f"UPDATE tasks SET {', '.join(sets)} WHERE id = %s AND user_id = %s "  # noqa: S608 (fragments fixes)
             f"RETURNING {_TASK_COLUMNS}",
@@ -543,28 +545,36 @@ def update_task(user_id, task_id, title=None, priority=None, due_at=_UNSET, stat
 REMINDER_MAX_AGE_HOURS = 24  # un rappel manqué depuis plus longtemps (bot arrêté) n'est plus envoyé
 
 
-def claim_due_reminders(limit=20):
+_CHANNELS = {
+    # canal : (marqueur « rappelé », marqueur « occurrence rappelée », condition sur l'utilisateur)
+    "telegram": ("reminded_at", "reminded_for", "u.telegram_id IS NOT NULL"),
+    "push": ("push_reminded_at", "push_reminded_for", "EXISTS (SELECT 1 FROM push_subscriptions s WHERE s.user_id = u.id)"),
+}
+
+
+def claim_due_reminders(limit=20, channel="telegram"):
     """Rappels à envoyer maintenant : tâches ouvertes dont l'heure est passée, pas encore rappelées.
 
     Chaque tâche n'est retournée qu'une fois (marquée dans la même opération), même si
-    plusieurs processus interrogent en même temps.
+    plusieurs processus interrogent en même temps. Chaque canal (Telegram, notifications push) a son marqueur.
     """
+    done_col, _, user_cond = _CHANNELS[channel]
     with cursor() as cur:
         cur.execute(
-            """
-            UPDATE tasks t SET reminded_at = now()
+            f"""
+            UPDATE tasks t SET {done_col} = now()
             FROM users u
             WHERE t.id IN (
                     SELECT id FROM tasks
-                    WHERE due_time AND reminded_at IS NULL AND status IN ('a_faire', 'en_cours')
+                    WHERE due_time AND {done_col} IS NULL AND status IN ('a_faire', 'en_cours')
                       AND due_at <= now() AND due_at > now() - make_interval(hours => %s)
                     ORDER BY due_at LIMIT %s FOR UPDATE SKIP LOCKED)
-              AND u.id = t.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
-            RETURNING t.id, t.title, t.due_at, u.telegram_id
-            """,
+              AND u.id = t.user_id AND {user_cond} AND u.disabled_at IS NULL
+            RETURNING t.id, t.title, t.due_at, u.telegram_id, t.user_id
+            """,  # noqa: S608 (noms de colonnes tirés d'un dictionnaire fixe)
             (REMINDER_MAX_AGE_HOURS, limit),
         )
-        return [{"id": r[0], "title": r[1], "due_at": r[2], "telegram_id": r[3]} for r in cur.fetchall()]
+        return [{"id": r[0], "title": r[1], "due_at": r[2], "telegram_id": r[3], "user_id": r[4]} for r in cur.fetchall()]
 
 
 def delete_task(user_id, task_id):
@@ -1320,7 +1330,7 @@ def update_event(user_id, event_id, title=None, start_at=None, end_at=None, loca
             sets.append("recurrence_until = %s")
             values.append(until)
         if moved or recurrence is not _UNSET or until is not _UNSET:
-            sets += ["reminded_at = NULL", "reminded_for = NULL"]
+            sets += ["reminded_at = NULL", "reminded_for = NULL", "push_reminded_at = NULL", "push_reminded_for = NULL"]
         cur.execute(
             f"UPDATE events SET {', '.join(sets)} WHERE id = %s AND user_id = %s RETURNING {_EVENT_COLUMNS}",  # noqa: S608
             (*values, event_id, user_id),
@@ -1369,7 +1379,7 @@ def purge_old_events(days=None):
         return cur.rowcount
 
 
-def claim_due_event_reminders(lead_minutes, limit=20):
+def claim_due_event_reminders(lead_minutes, limit=20, channel="telegram"):
     """Rendez-vous à rappeler maintenant : l'heure de rappel (début moins `lead_minutes`) est passée, le rendez-vous
     n'a pas commencé depuis plus de 10 minutes, et le rendez-vous existait déjà avant cette heure de rappel
     (créer un rendez-vous pour dans 10 minutes ne déclenche pas de rappel immédiat). Chacun n'est rendu qu'une fois.
@@ -1377,33 +1387,37 @@ def claim_due_event_reminders(lead_minutes, limit=20):
     Pour une série, chaque occurrence est rappelée une fois (la plus proche d'abord)."""
     if not lead_minutes or lead_minutes <= 0:
         return []
+    done_col, _, user_cond = _CHANNELS[channel]
     with cursor() as cur:
         cur.execute(
-            """
-            UPDATE events e SET reminded_at = now()
+            f"""
+            UPDATE events e SET {done_col} = now()
             FROM users u
             WHERE e.id IN (
                     SELECT id FROM events
-                    WHERE recurrence IS NULL AND reminded_at IS NULL
+                    WHERE recurrence IS NULL AND {done_col} IS NULL
                       AND start_at - make_interval(mins => %s) <= now()
                       AND start_at > now() - make_interval(mins => %s)
                       AND updated_at <= start_at - make_interval(mins => %s)
                     ORDER BY start_at LIMIT %s FOR UPDATE SKIP LOCKED)
-              AND u.id = e.user_id AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL
-            RETURNING e.id, e.title, e.start_at, e.end_at, e.location, u.telegram_id, u.timezone
-            """,
+              AND u.id = e.user_id AND {user_cond} AND u.disabled_at IS NULL
+            RETURNING e.id, e.title, e.start_at, e.end_at, e.location, u.telegram_id, u.timezone, e.user_id
+            """,  # noqa: S608 (noms de colonnes tirés d'un dictionnaire fixe)
             (lead_minutes, EVENT_REMINDER_MAX_AGE_MINUTES, lead_minutes, limit),
         )
         reminders = [
-            {"id": r[0], "title": r[1], "start_at": r[2], "end_at": r[3], "location": r[4], "telegram_id": r[5], "timezone": r[6]}
+            {"id": r[0], "title": r[1], "start_at": r[2], "end_at": r[3], "location": r[4], "telegram_id": r[5],
+             "timezone": r[6], "user_id": r[7]}
             for r in cur.fetchall()
         ]
-    reminders += _claim_series_reminders(lead_minutes, limit)
+    reminders += _claim_series_reminders(lead_minutes, limit, channel)
     return _with_linked_tasks(reminders)
 
 
-def _claim_series_reminders(lead_minutes, limit):
+def _claim_series_reminders(lead_minutes, limit, channel="telegram"):
     import agenda
+
+    _, for_col, user_cond = _CHANNELS[channel]
 
     lead = timedelta(minutes=lead_minutes)
     max_age = timedelta(minutes=EVENT_REMINDER_MAX_AGE_MINUTES)
@@ -1413,9 +1427,9 @@ def _claim_series_reminders(lead_minutes, limit):
         cur.execute("SELECT now()")
         now = cur.fetchone()[0]
         cur.execute(
-            f"SELECT {columns}, e.reminded_for, u.telegram_id, u.timezone "  # noqa: S608
+            f"SELECT {columns}, e.{for_col}, u.telegram_id, u.timezone, e.user_id "  # noqa: S608
             "FROM events e JOIN users u ON u.id = e.user_id "
-            "WHERE e.recurrence IS NOT NULL AND u.telegram_id IS NOT NULL AND u.disabled_at IS NULL "
+            f"WHERE e.recurrence IS NOT NULL AND {user_cond} AND u.disabled_at IS NULL "
             "AND e.start_at <= now() + make_interval(mins => %s) "
             "AND (e.recurrence_until IS NULL OR e.recurrence_until >= current_date - 1) "
             "ORDER BY e.id LIMIT 500 FOR UPDATE OF e SKIP LOCKED",
@@ -1424,7 +1438,7 @@ def _claim_series_reminders(lead_minutes, limit):
         for row in cur.fetchall():
             if len(claimed) >= limit:
                 break
-            event, reminded_for, telegram_id, zone = _event(row[:11]), row[11], row[12], row[13]
+            event, reminded_for, telegram_id, zone, owner = _event(row[:11]), row[11], row[12], row[13], row[14]
             due = [
                 o for o in agenda.occurrences(event, now - max_age, now + lead + timedelta(seconds=1))
                 if o["start_at"] > now - max_age and o["start_at"] - lead <= now
@@ -1434,10 +1448,10 @@ def _claim_series_reminders(lead_minutes, limit):
             if not due:
                 continue
             occurrence = min(due, key=lambda o: o["start_at"])
-            cur.execute("UPDATE events SET reminded_for = %s WHERE id = %s", (occurrence["start_at"], event["id"]))
+            cur.execute(f"UPDATE events SET {for_col} = %s WHERE id = %s", (occurrence["start_at"], event["id"]))  # noqa: S608
             claimed.append({
                 "id": event["id"], "title": event["title"], "start_at": occurrence["start_at"], "end_at": occurrence["end_at"],
-                "location": event["location"], "telegram_id": telegram_id, "timezone": zone,
+                "location": event["location"], "telegram_id": telegram_id, "timezone": zone, "user_id": owner,
                 "recurrence": event["recurrence"], "recurrence_until": event["recurrence_until"],
                 "occurrence": occurrence["occurrence"],
             })

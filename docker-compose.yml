@@ -47,6 +47,11 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_REFRESH_TOKEN: ${GOOGLE_REFRESH_TOKEN:-}
       FOX_SERVICE_TOKEN: ${FOX_SERVICE_TOKEN:?définir FOX_SERVICE_TOKEN dans .env (voir .env.example)}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
+      PUSH_ALLOWED_HOSTS: ${PUSH_ALLOWED_HOSTS:-}
+      MAX_PUSH_DEVICES: ${MAX_PUSH_DEVICES:-10}
       OWNER_USERNAME: ${OWNER_USERNAME:-owner}
       OWNER_PASSWORD: ${OWNER_PASSWORD:-}
       OWNER_MAX_CALLS_PER_DAY: ${OWNER_MAX_CALLS_PER_DAY:-200}
@@ -104,6 +109,26 @@ services:
     networks:
       - fox_net
 
+  # Notifications push : envoie les rappels aux appareils qui les ont activées (même application fermée).
+  # Sans clés VAPID dans .env (docker compose exec orchestrator python admin.py vapid-keys), il attend sans rien faire.
+  push_worker:
+    build: ./orchestrator
+    restart: unless-stopped
+    command: python push_worker.py
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      TIMEZONE: ${TIMEZONE:-Africa/Douala}
+      AGENDA_REMIND_MINUTES: ${AGENDA_REMIND_MINUTES:-30}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
+      PUSH_POLL_SECONDS: ${PUSH_POLL_SECONDS:-30}
+    depends_on:
+      orchestrator:
+        condition: service_healthy
+    networks:
+      - fox_net
+
   # Interface web (React) : développement avec rechargement automatique.
   #   docker compose --profile dev up web_dev      puis http://localhost:5173
   web_dev:
@@ -114,6 +139,7 @@ services:
     environment:
       VITE_API_TARGET: http://orchestrator:5000
       VITE_USE_POLLING: "1"
+      VITE_ENABLE_SW: "1"  # le service worker (notifications) est aussi actif en développement sur localhost
     volumes:
       - ./web:/app
       - web_node_modules:/app/node_modules

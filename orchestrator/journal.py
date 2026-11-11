@@ -31,6 +31,8 @@ EVENT_LABELS = {
     "quote_deleted": "Devis supprimé",
     "quote_archived": "Devis archivé",
     "quote_unarchived": "Devis désarchivé",
+    "push_enabled": "Notifications activées sur un appareil",
+    "push_disabled": "Notifications désactivées sur un appareil",
     "project_created": "Chantier créé",
     "project_updated": "Chantier modifié",
     "project_archived": "Chantier archivé",

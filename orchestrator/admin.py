@@ -8,6 +8,7 @@
     docker compose exec orchestrator python admin.py enable-user marie
     docker compose exec -it orchestrator python admin.py set-password owner
     docker compose exec orchestrator python admin.py purge
+    docker compose exec orchestrator python admin.py vapid-keys
 
 Le code d'invitation n'est affiché qu'une seule fois : seul son empreinte est stockée.
 """
@@ -17,6 +18,7 @@ import sys
 
 import accounts
 import db
+import webpush
 
 
 def fmt(value):
@@ -28,6 +30,18 @@ def cmd_create_invite(args):
     print(f"Code d'invitation (valable {args.days} jour(s), {args.uses} utilisation(s)) :")
     print(f"  {code}")
     print("Il ne sera plus affiché : transmets-le maintenant à la personne invitée.")
+    return 0
+
+
+def cmd_vapid_keys(args):
+    public, private = webpush.generate_vapid_keys()
+    print("Ajoute ces trois lignes à ton fichier .env (la clé privée est secrète : ne la partage jamais, ne la commite pas) :")
+    print()
+    print(f"VAPID_PUBLIC_KEY={public}")
+    print(f"VAPID_PRIVATE_KEY={private}")
+    print("VAPID_SUBJECT=mailto:ton-adresse@exemple.com")
+    print()
+    print("Puis : docker compose up -d orchestrator push_worker")
     return 0
 
 
@@ -108,6 +122,7 @@ def build_parser():
     invite.add_argument("--note", default=None)
     invite.set_defaults(func=cmd_create_invite)
 
+    sub.add_parser("vapid-keys", help="génère les clés des notifications push").set_defaults(func=cmd_vapid_keys)
     sub.add_parser("list-invites").set_defaults(func=cmd_list_invites)
     revoke = sub.add_parser("revoke-invite")
     revoke.add_argument("id", type=int)

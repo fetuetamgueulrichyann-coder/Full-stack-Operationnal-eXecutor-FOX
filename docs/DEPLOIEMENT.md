@@ -78,6 +78,16 @@ et `docker compose --profile prod restart proxy`.
 4. Sauvegardes automatiques : `crontab -e` puis `0 3 * * * cd ~/fox && ./scripts/backup.sh`. Copier de temps en temps
    le dossier `backups/` hors du serveur (les sauvegardes contiennent des données personnelles : ne pas les publier).
 
+### Notifications (rappels application fermée)
+
+```bash
+docker compose exec orchestrator python admin.py vapid-keys   # affiche trois lignes à coller dans .env
+nano .env                                                       # VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT
+docker compose up -d orchestrator push_worker
+```
+La clé privée VAPID est un secret au même titre que `FOX_SERVICE_TOKEN` : ne la partage pas, ne la commite pas.
+Les notifications exigent HTTPS (ou `localhost`). Ensuite, chaque utilisateur les active dans Réglages, sur chaque appareil.
+
 ## 6. Mises à jour
 
 ```bash
@@ -105,5 +115,5 @@ docker compose --profile build run --rm web_build && docker compose --profile pr
 - Les clés (Gemini, Groq, Telegram, Google) sont dans `.env` en clair, protégé par les droits du fichier (`chmod 600`)
   et par l'accès au serveur. Elles ne sont pas en base. Un coffre de secrets (Docker secrets, Vault) serait l'étape suivante.
 - Les sauvegardes ne sont pas chiffrées : à chiffrer (par exemple `gpg`) avant toute copie hors serveur.
-- Les notifications quand l'application est fermée (Web Push) ne sont pas encore faites.
+- Les notifications push passent par les services du navigateur (Google, Mozilla, Apple) : leur contenu est chiffré, mais ces services voient qu'un appareil reçoit une notification, et quand.
 - Pas d'authentification à deux facteurs sur l'interface web.

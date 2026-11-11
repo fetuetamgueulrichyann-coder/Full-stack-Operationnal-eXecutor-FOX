@@ -27,6 +27,9 @@ import tasks
 import timezones
 import tools
 import prodcheck
+import push_delivery
+import push_store
+import webpush
 import websecurity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -1282,6 +1285,71 @@ def ledger_delete(entry_id):
         return jsonify(error="écriture introuvable"), 404
     db.audit(user["id"], "ledger_entry_deleted", None, {"entry_id": entry_id})
     return jsonify(status="deleted")
+
+
+# --- Notifications push (rappels hors onglet) -------------------------------------------------
+@app.get("/push/config")
+def push_config():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(
+        enabled=webpush.configured(), public_key=os.environ.get("VAPID_PUBLIC_KEY") if webpush.configured() else None,
+        devices=push_store.count(user["id"]),
+    )
+
+
+@app.post("/push/subscribe")
+def push_subscribe():
+    user, error = chat_auth()
+    if error:
+        return error
+    if not webpush.configured():
+        return jsonify(error="Les notifications ne sont pas configurées sur ce serveur."), 409
+    data = body()
+    keys = data.get("keys") if isinstance(data.get("keys"), dict) else {}
+    endpoint, p256dh, auth = data.get("endpoint"), keys.get("p256dh"), keys.get("auth")
+    if not all(isinstance(v, str) and 0 < len(v) <= 2000 for v in (endpoint, p256dh, auth)):
+        return jsonify(error="Abonnement incomplet."), 400
+    if not webpush.endpoint_allowed(endpoint):
+        return jsonify(error="Ce service de notification n'est pas accepté."), 400
+    try:
+        if len(webpush.b64d(p256dh)) != 65 or len(webpush.b64d(auth)) != 16:
+            raise ValueError
+    except Exception:  # noqa: BLE001 - toute clé illisible ou de mauvaise taille
+        return jsonify(error="Clés d'abonnement invalides."), 400
+    try:
+        push_store.add(user["id"], endpoint, p256dh, auth)
+    except push_store.TooManyDevices as exc:
+        return jsonify(error=f"Limite de {exc.args[0]} appareils atteinte : désactivez-en un d'abord."), 409
+    db.audit(user["id"], "push_enabled", None, None)
+    return jsonify(status="subscribed", devices=push_store.count(user["id"])), 201
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe():
+    user, error = chat_auth()
+    if error:
+        return error
+    endpoint = body().get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        return jsonify(error="Appareil inconnu."), 400
+    if push_store.remove(user["id"], endpoint):
+        db.audit(user["id"], "push_disabled", None, None)
+    return jsonify(status="unsubscribed", devices=push_store.count(user["id"]))
+
+
+@app.post("/push/test")
+def push_test():
+    user, error = chat_auth()
+    if error:
+        return error
+    if not webpush.configured():
+        return jsonify(error="Les notifications ne sont pas configurées sur ce serveur."), 409
+    if push_store.count(user["id"]) == 0:
+        return jsonify(error="Aucun appareil enregistré : activez d'abord les notifications."), 404
+    sent = push_delivery.deliver(user["id"], {"title": "FOX", "body": "Les notifications fonctionnent.", "url": "/reglages", "tag": "test"})
+    return jsonify(sent=sent)
 
 
 # --- E-mails ---------------------------------------------------------------------
