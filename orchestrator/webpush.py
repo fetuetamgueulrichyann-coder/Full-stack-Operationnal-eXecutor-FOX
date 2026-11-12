@@ -117,6 +117,12 @@ class PushError(Exception):
     """Échec temporaire ou refus du service de push."""
 
 
+def missing(env=None):
+    """Noms des variables VAPID absentes de l'environnement du serveur (pour le diagnostic)."""
+    env = os.environ if env is None else env
+    return [name for name in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY") if not env.get(name)]
+
+
 def configured(env=None):
     env = os.environ if env is None else env
     return bool(env.get("VAPID_PUBLIC_KEY") and env.get("VAPID_PRIVATE_KEY"))

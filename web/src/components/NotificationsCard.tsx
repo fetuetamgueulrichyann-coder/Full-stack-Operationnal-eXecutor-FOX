@@ -56,7 +56,10 @@ export function NotificationsCard() {
         <p className="muted small-text">Ce navigateur ne gère pas les notifications. Sur iPhone, ajoutez d'abord FOX à l'écran d'accueil (menu Partager), puis ouvrez-le depuis l'icône.</p>
       )}
       {supported && config && !config.enabled && (
-        <p className="muted small-text">Les notifications ne sont pas encore configurées sur ce serveur (clés VAPID manquantes).</p>
+        <p className="muted small-text">
+          Les notifications ne sont pas encore configurées sur ce serveur
+          {config.missing && config.missing.length > 0 ? ` : le serveur ne reçoit pas ${config.missing.join(" ni ")}. Vérifiez le fichier .env, puis relancez avec « docker compose up -d --force-recreate orchestrator push_worker ».` : "."}
+        </p>
       )}
       {denied && <p className="muted small-text">Les notifications sont bloquées pour ce site : autorisez-les dans les réglages du navigateur, puis rechargez la page.</p>}
       {supported && config?.enabled && !denied && (

@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import os
@@ -432,6 +433,16 @@ def exposed_tools(role):
     return [t for t in REGISTRY.values() if t.expose and t.allowed_for(role)]
 
 
+# Conversation orale : la réponse sera lue à voix haute (courte, sans mise en forme).
+SPOKEN = contextvars.ContextVar("fox_spoken", default=False)
+PROMPT_SPOKEN = (
+    "\nMode conversation orale : ta réponse sera lue à voix haute. Réponds en une à trois phrases courtes et "
+    "naturelles, comme à l'oral, sans liste, sans tableau, sans symbole, sans mise en forme et sans adresse web. "
+    "Écris les chiffres et les heures comme on les dit. Réponds dans la langue de l'utilisateur (français ou anglais). "
+    "Si le détail est long, donne l'essentiel et propose la suite."
+)
+
+
 def system_prompt(with_tools=True, role="owner", user_id=None):
     now = datetime.now(tz()).isoformat(timespec="minutes")
     has_tools = with_tools and bool(exposed_tools(role))
@@ -439,7 +450,8 @@ def system_prompt(with_tools=True, role="owner", user_id=None):
     if has_tools and any(t.name == "lire_agenda" for t in exposed_tools(role)):
         tools_part += PROMPT_GOOGLE_CALENDAR
     remembered = memory.prompt_block(user_id) if user_id is not None else ""
-    return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {tz_name()}).{remembered}"
+    spoken = PROMPT_SPOKEN if SPOKEN.get() else ""
+    return f"{SYSTEM_PROMPT} {tools_part}\nDate et heure actuelles : {now} (fuseau {tz_name()}).{remembered}{spoken}"
 
 
 PRIVATE_HIDDEN_TOOLS = ("retenir",)  # en mode privé, rien n'est mémorisé

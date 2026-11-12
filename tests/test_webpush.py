@@ -143,3 +143,22 @@ def test_aucun_envoi_vers_une_adresse_interdite():
 def test_sans_cles_vapid_rien_ne_part():
     with pytest.raises(webpush.PushError):
         webpush.send(sub(), {"title": "t"}, env={}, opener=lambda r, timeout: FakeResponse())
+
+
+def test_commande_vapid_keys_n_ecrit_que_des_lignes_de_env_sur_la_sortie_standard(capsys, monkeypatch):
+    import importlib
+    import re
+    import sys
+    import types
+
+    for name in ("db", "accounts"):  # admin les importe ; cette commande n'a besoin d'aucune base
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.delitem(sys.modules, "admin", raising=False)
+    admin = importlib.import_module("admin")
+    assert admin.cmd_vapid_keys(None) == 0
+    out, err = capsys.readouterr()
+    lines = out.splitlines()
+    assert len(lines) == 3 and all(re.match(r"^VAPID_[A-Z_]+=\S+$", line) for line in lines)
+    assert lines[0].startswith("VAPID_PUBLIC_KEY=") and lines[1].startswith("VAPID_PRIVATE_KEY=")
+    assert "secrète" in err and lines[1].split("=", 1)[1] not in err
+    monkeypatch.delitem(sys.modules, "admin", raising=False)

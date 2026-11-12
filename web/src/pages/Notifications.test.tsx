@@ -56,6 +56,14 @@ describe("Notifications (réglages)", () => {
     expect(screen.queryByRole("button", { name: "Activer sur cet appareil" })).not.toBeInTheDocument();
   });
 
+  it("dit quelle variable le serveur ne reçoit pas", async () => {
+    fakePush();
+    mockApi({ ...authed, "GET /push/config": () => ({ body: { enabled: false, public_key: null, devices: 0, missing: ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY"] } }) });
+    open();
+    expect(await screen.findByText(/ne reçoit pas VAPID_PUBLIC_KEY ni VAPID_PRIVATE_KEY/)).toBeInTheDocument();
+    expect(screen.getByText(/force-recreate orchestrator push_worker/)).toBeInTheDocument();
+  });
+
   it("active les notifications et envoie l'abonnement au serveur", async () => {
     const { subscribe } = fakePush();
     const { calls } = mockApi({

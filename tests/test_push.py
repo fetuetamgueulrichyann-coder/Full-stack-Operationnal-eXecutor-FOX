@@ -31,7 +31,15 @@ def subscribe(client, telegram_id=OWNER, endpoint=ENDPOINT, **extra):
 def test_config_sans_cles_est_desactivee(client, monkeypatch):
     monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
     got = call(client, "GET", "/push/config").get_json()
-    assert got == {"enabled": False, "public_key": None, "devices": 0}
+    assert got == {"enabled": False, "public_key": None, "devices": 0, "missing": ["VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY"]}
+
+
+def test_config_dit_quelle_variable_manque(client, monkeypatch):
+    public, _ = webpush.generate_vapid_keys()
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", public)
+    monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
+    got = call(client, "GET", "/push/config").get_json()
+    assert got["enabled"] is False and got["missing"] == ["VAPID_PRIVATE_KEY"]
 
 
 def test_config_avec_cles_donne_la_cle_publique(client, vapid):

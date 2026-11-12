@@ -110,7 +110,7 @@ Légende : 🔒 session (cookie) requise ; ✍️ requête modifiante (jeton CSR
 
 | Route | Corps / paramètres | Réponse |
 |---|---|---|
-| `POST /message` 🔒✍️ | `text` (obligatoire, 4 000 caractères au plus) ; `chat_id` (facultatif) | `{reply, pending, chat_id, private}`. `pending` est une liste d'actions à confirmer : `[{id, summary}]`. Erreurs : 400, 413, 429 `quota_exceeded`, 502, 503. |
+| `POST /message` 🔒✍️ | `text` (obligatoire, 4 000 caractères au plus) ; `chat_id` (facultatif) ; `voice: true` (facultatif : conversation orale, FOX répond court, fait pour être lu à voix haute) | `{reply, pending, chat_id, private}`. `pending` est une liste d'actions à confirmer : `[{id, summary}]`. Erreurs : 400, 413, 429 `quota_exceeded`, 502, 503. |
 | `POST /actions/<id>/confirm` 🔒✍️ | `{}` | `{reply}` : résultat de l'action confirmée. |
 | `POST /actions/<id>/cancel` 🔒✍️ | `{}` | `{reply}`. |
 | `GET /chats` 🔒 | | `{chats: [{id, title, created_at, updated_at, messages}], current, private}`. `current` : conversation active non vide ou `null`. |
@@ -170,12 +170,12 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `GET /ledger/summary` 🔒 | `?month=AAAA-MM`, `project=<id>` | `{summary: {month, income, expense, balance, entries, by_category: […]}}` (+ `_label`). |
 | `POST /ledger` 🔒✍️ | `kind` (recette ou dépense), `amount` (> 0), `description` (requis), `category`, `date` (AAAA-MM-JJ, défaut aujourd'hui), `project` (numéro) | `201 {entry}` ; `404` si le chantier n'existe pas pour cet utilisateur. |
 | `DELETE /ledger/<id>` 🔒✍️ | | `{status: "deleted"}` ou `404`. |
-| `GET /push/config` 🔒 | | `{enabled, public_key, devices}` : notifications configurées (clés VAPID) et nombre d'appareils de l'utilisateur. |
+| `GET /push/config` 🔒 | | `{enabled, public_key, devices, missing}` : notifications configurées (clés VAPID), nombre d'appareils de l'utilisateur, et variables VAPID absentes du serveur (diagnostic). |
 | `POST /push/subscribe` 🔒✍️ | `endpoint`, `keys: {p256dh, auth}` (l'abonnement du navigateur) | `201 {status, devices}` ; `400` si l'adresse n'est pas celle d'un service de push connu (HTTPS) ; `409` si non configuré ou limite (`MAX_PUSH_DEVICES`) atteinte. |
 | `POST /push/unsubscribe` 🔒✍️ | `endpoint` | `{status, devices}` (ne retire que les appareils de l'utilisateur). |
 | `POST /push/test` 🔒✍️ | | `{sent}` : envoie une notification de test à ses appareils ; `404` s'il n'en a aucun. |
 | `GET /voice/config` 🔒 | | `{enabled, voice, daily_limit, used}` : la voix est-elle disponible, et combien de caractères reste-t-il aujourd'hui. |
-| `POST /voice/speak` 🔒✍️ | `text` | Réponse `audio/wav` (le texte est nettoyé : sans Markdown, code ni adresses, 1 200 caractères au plus). `400` texte vide ; `409` voix désactivée ; `429` plafond du jour (`voice_quota`) ; `502` synthèse indisponible (`voice_unavailable`, caractères rendus). Rien n'est enregistré, même en mode privé. |
+| `POST /voice/speak` 🔒✍️ | `text` | Réponse `audio/wav` (le texte est nettoyé : sans Markdown, code ni adresses, 1 200 caractères au plus). `400` texte vide ; `409` voix désactivée ; `429` plafond du jour (`voice_quota`) ou tous les modèles saturés (`voice_busy`, caractères rendus) ; `502` synthèse indisponible (`voice_unavailable`, caractères rendus). Rien n'est enregistré, même en mode privé. |
 | `DELETE /quotes/<ref>` 🔒✍️ | `{}` | `{status: "deleted"}`. 409 si le devis est envoyé ou accepté. |
 | `GET /quotes/<ref>/pdf` 🔒 | | Le fichier PDF (pas du JSON). |
 | `GET /quotes/<ref>/mail` 🔒 | | Brouillon d'e-mail au client. |

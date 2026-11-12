@@ -34,14 +34,14 @@ def cmd_create_invite(args):
 
 
 def cmd_vapid_keys(args):
+    """Les trois lignes du .env sortent seules sur la sortie standard (elles peuvent être redirigées vers .env) ;
+    les explications vont sur la sortie d'erreur, pour ne jamais se retrouver dans le fichier."""
     public, private = webpush.generate_vapid_keys()
-    print("Ajoute ces trois lignes à ton fichier .env (la clé privée est secrète : ne la partage jamais, ne la commite pas) :")
-    print()
+    print("Ajoute ces trois lignes au fichier .env (la clé privée est secrète : ne la partage jamais, ne la commite pas), "
+          "puis : docker compose up -d --force-recreate orchestrator push_worker", file=sys.stderr)
     print(f"VAPID_PUBLIC_KEY={public}")
     print(f"VAPID_PRIVATE_KEY={private}")
     print("VAPID_SUBJECT=mailto:ton-adresse@exemple.com")
-    print()
-    print("Puis : docker compose up -d orchestrator push_worker")
     return 0
 
 

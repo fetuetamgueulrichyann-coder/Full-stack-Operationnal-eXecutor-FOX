@@ -332,6 +332,7 @@ def message():
         except db.QuotaExceeded as exc:
             return jsonify(error="plafond journalier atteint", code="quota_exceeded", scope=exc.scope), 429
 
+        spoken_token = agent.SPOKEN.set(data.get("voice") is True)
         try:
             reply, tokens, pending = agent.chat(
                 user_id, text, role, chat_id=chat_id, private=private
@@ -349,6 +350,8 @@ def message():
         except Exception:
             log.exception("echec de l'appel au modele")
             return jsonify(error="service indisponible"), 502
+        finally:
+            agent.SPOKEN.reset(spoken_token)
 
         if tokens:
             db.add_tokens(user_id, tokens)
@@ -1299,7 +1302,7 @@ def push_config():
         return error
     return jsonify(
         enabled=webpush.configured(), public_key=os.environ.get("VAPID_PUBLIC_KEY") if webpush.configured() else None,
-        devices=push_store.count(user["id"]),
+        devices=push_store.count(user["id"]), missing=webpush.missing(),
     )
 
 
@@ -1456,5 +1459,7 @@ def voice_speak():
     except speech.SpeechError as exc:
         db.release_voice_chars(user["id"], len(spoken))
         log.warning("synthèse vocale échouée (%s) : %s", exc.code, exc.message)
+        if exc.code == "busy":
+            return jsonify(error="la voix est saturée, réessayez dans un instant", code="voice_busy"), 429
         return jsonify(error="la voix est indisponible pour le moment", code="voice_unavailable"), 502
     return Response(audio, mimetype="audio/wav", headers={"Cache-Control": "no-store"})

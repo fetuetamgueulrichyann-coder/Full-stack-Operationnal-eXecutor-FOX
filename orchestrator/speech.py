@@ -9,6 +9,8 @@ import json
 import os
 import re
 import struct
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -91,8 +93,38 @@ def _post(url, payload, key, opener):
         return json.loads(response.read().decode())
 
 
+# Un modèle dont le quota est épuisé (429) est mis de côté un moment : on ne le sollicite plus pour rien,
+# et la voix passe tout de suite au modèle suivant (chaque modèle a son propre quota).
+_cooling = {}
+_lock = threading.Lock()
+
+
+def cooldown_seconds(env=None):
+    env = os.environ if env is None else env
+    try:
+        return max(5, int(env.get("VOICE_COOLDOWN_SECONDS", "120")))
+    except ValueError:
+        return 120
+
+
+def reset():
+    with _lock:
+        _cooling.clear()
+
+
+def _cooling_now(model):
+    with _lock:
+        until = _cooling.get(model, 0)
+    return until > time.monotonic()
+
+
+def _cool(model, seconds):
+    with _lock:
+        _cooling[model] = time.monotonic() + seconds
+
+
 def synthesize(text, env=None, opener=None):
-    """Retourne le son (WAV) de `text`. Lève SpeechError."""
+    """Retourne le son (WAV) de `text`. Lève SpeechError (code upstream_error, empty_audio, voice_disabled ou busy)."""
     env = os.environ if env is None else env
     opener = opener or urllib.request.urlopen
     if not enabled(env):
@@ -106,7 +138,11 @@ def synthesize(text, env=None, opener=None):
     voice = voice_name(env)
     data = None
     last_status = None
+    busy = 0
     for model in models:
+        if _cooling_now(model):
+            busy += 1
+            continue
         url = ENDPOINT.format(model=model)
         for style in ("prebuilt", "simple"):  # deux écritures de la voix selon la version de l'API
             try:
@@ -116,7 +152,11 @@ def synthesize(text, env=None, opener=None):
                 last_status = exc.code
                 if exc.code == 400 and style == "prebuilt":
                     continue
-                if exc.code == 404:  # ce modèle n'existe pas pour cette clé : on essaie le suivant
+                if exc.code == 429:  # quota de ce modèle épuisé : pause, puis modèle suivant
+                    _cool(model, cooldown_seconds(env))
+                    busy += 1
+                    break
+                if exc.code in (404, 500, 502, 503, 504):  # modèle absent ou en panne : modèle suivant
                     break
                 raise SpeechError("upstream_error", f"synthèse refusée ({exc.code})") from exc
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
@@ -124,6 +164,8 @@ def synthesize(text, env=None, opener=None):
         if data is not None:
             break
     if data is None:
+        if busy:
+            raise SpeechError("busy", "tous les modèles de voix sont saturés pour le moment")
         raise SpeechError("upstream_error", f"synthèse refusée ({last_status})")
     try:
         part = data["candidates"][0]["content"]["parts"][0]["inlineData"]

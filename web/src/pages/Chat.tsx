@@ -52,6 +52,7 @@ export function Chat() {
   const [voiceMode, setVoiceMode] = useState(false);
   const [listenId, setListenId] = useState<string | null>(null);
   const voiceModeRef = useRef(false);
+  const mainRef = useRef<HTMLElement | null>(null);
   const sendRef = useRef<(message: string) => Promise<void>>(async () => undefined);
   const voice = useVoice();
   const dictation = useDictation((spoken) => {
@@ -117,6 +118,25 @@ export function Chat() {
       cancelled = true;
     };
   }, []);
+
+  // Le logo vibre au rythme du volume de la voix : le niveau (0 à 1) est copié dans une variable CSS.
+  useEffect(() => {
+    const el = mainRef.current;
+    if (!el || voice.state !== "playing") {
+      el?.style.setProperty("--voice-level", "0");
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      el.style.setProperty("--voice-level", voice.levelRef.current.toFixed(3));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(raf);
+      el.style.setProperty("--voice-level", "0");
+    };
+  }, [voice.state, voice.levelRef]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
@@ -187,7 +207,8 @@ export function Chat() {
     const abort = window.setTimeout(() => controller.abort(), REPLY_TIMEOUT_MS);
     const slowTimer = window.setTimeout(() => setSlow(true), SLOW_HINT_MS);
     try {
-      const body: { text: string; chat_id?: number } = { text: clean };
+      const body: { text: string; chat_id?: number; voice?: boolean } = { text: clean };
+      if (voiceModeRef.current) body.voice = true; // FOX répond court, fait pour être dit à voix haute
       if (activeId !== null && !privateMode) body.chat_id = activeId;
       const data = await api<MessageResponse>("/message", { method: "POST", body, signal: controller.signal });
       setPrivateMode(data.private);
@@ -266,6 +287,8 @@ export function Chat() {
     setListenId((current) => (current === bubble.id ? null : current));
   }
 
+  const lastAssistantIndex = bubbles.map((b) => b.role).lastIndexOf("assistant");
+
   function onSubmit(event: FormEvent) {
     event.preventDefault();
     void send(text);
@@ -317,7 +340,7 @@ export function Chat() {
         </div>
       </section>
 
-      <main className="chat-main">
+      <main className="chat-main" ref={mainRef}>
         <header className="chat-head">
           <button type="button" className="icon-btn list-toggle" aria-label="Conversations" onClick={() => setShowList((v) => !v)}>
             <Icon name="list" />
@@ -334,13 +357,16 @@ export function Chat() {
               <span>Demandez un rendez-vous, une tâche, un devis ou un e-mail.</span>
             </div>
           )}
-          {bubbles.map((bubble) =>
+          {bubbles.map((bubble, index) =>
             bubble.role === "user" ? (
               <div key={bubble.id} className="bubble user">
                 {bubble.text}
               </div>
             ) : (
-              <div key={bubble.id} className="assistant">
+              <div
+                key={bubble.id}
+                className={`assistant${voice.state === "playing" && (listenId ? listenId === bubble.id : voiceMode && index === lastAssistantIndex) ? " speaking" : ""}`}
+              >
                 <img src={logo} alt="FOX" width={32} />
                 <div className="assistant-body">
                   <div className="bubble-text"><Markdown text={bubble.text} /></div>
@@ -390,12 +416,21 @@ export function Chat() {
         )}
 
         <form className="composer" onSubmit={onSubmit} aria-label="Écrire à FOX">
-          {voiceMode && (
-            <div className="voice-bar" role="status">
-              <span className="wave"><Icon name="wave" size={18} /></span>
+          {(voiceMode || voice.state !== "idle") && (
+            <div className={`voice-stage${voice.state === "playing" ? " speaking" : ""}`} role="status">
+              <img className="voice-logo" src={logo} alt="" width={56} />
               <span>
-                {voice.state === "loading" ? "FOX prépare sa réponse…" : voice.state === "playing" ? "FOX parle…" : sending ? "FOX réfléchit…" : dictation.listening ? "Je vous écoute, parlez…" : "Conversation orale active"}
+                {voice.state === "loading"
+                  ? voiceMode ? "FOX prépare sa réponse…" : "FOX prépare sa voix…"
+                  : voice.state === "playing" ? "FOX parle…"
+                  : sending ? "FOX réfléchit…"
+                  : dictation.listening ? "Je vous écoute, parlez…" : "Conversation orale active"}
               </span>
+              {voice.state !== "idle" && (
+                <button type="button" className="listen-btn" aria-label="Couper la voix" onClick={() => { voice.stop(); setListenId(null); }}>
+                  <Icon name="stop" size={16} /> Couper
+                </button>
+              )}
             </div>
           )}
           <div className="composer-box">

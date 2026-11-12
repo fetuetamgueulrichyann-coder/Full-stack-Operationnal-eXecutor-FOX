@@ -37,6 +37,7 @@ def gemini(monkeypatch):
 
     monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    speech.reset()
     monkeypatch.delenv("VOICE_ENABLED", raising=False)
     return calls
 
@@ -96,7 +97,7 @@ def test_seconde_ecriture_de_la_voix_si_400(monkeypatch, gemini):
     assert "prebuiltVoiceConfig" in seen[0]["voiceConfig"] and seen[1]["voiceConfig"] == {"voice": "Kore"}
 
 
-@pytest.mark.parametrize("code", [403, 429, 500])
+@pytest.mark.parametrize("code", [401, 403, 418])
 def test_autres_erreurs_http_sans_nouvel_essai(monkeypatch, gemini, code):
     def fake(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, code, "no", {}, None)
@@ -236,3 +237,116 @@ def test_tous_les_modeles_absents(monkeypatch, gemini):
     with pytest.raises(speech.SpeechError) as exc:
         speech.synthesize("Bonjour")
     assert exc.value.code == "upstream_error"
+
+
+# --- repli entre modèles (quota épuisé) -------------------------------------------------------
+def models_in(urls):
+    return [u.split("models/")[1].split(":")[0] for u in urls]
+
+
+def test_quota_epuise_on_passe_au_modele_suivant_et_on_le_met_de_cote(monkeypatch, gemini):
+    urls = []
+
+    def fake(req, timeout=None):
+        urls.append(req.full_url)
+        if "gemini-3.1-flash-tts-preview" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 429, "quota", {}, None)
+        return reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+    assert models_in(urls) == ["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"]
+    urls.clear()
+    assert speech.synthesize("Encore")[:4] == b"RIFF"  # le premier est en pause : pas de nouvel appel inutile
+    assert models_in(urls) == ["gemini-2.5-flash-preview-tts"]
+
+
+def test_pause_terminee_le_modele_est_retente(monkeypatch, gemini):
+    urls = []
+    monkeypatch.setattr(speech.urllib.request, "urlopen", lambda req, timeout=None: (urls.append(req.full_url), reply())[1])
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    speech._cool("gemini-3.1-flash-tts-preview", 60)
+    speech.synthesize("Bonjour")
+    assert models_in(urls) == ["gemini-2.5-flash-preview-tts"]
+    speech._cooling["gemini-3.1-flash-tts-preview"] = 0
+    urls.clear()
+    speech.synthesize("Bonjour")
+    assert models_in(urls) == ["gemini-3.1-flash-tts-preview"]
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_panne_du_modele_on_passe_au_suivant(monkeypatch, gemini, status):
+    def fake(req, timeout=None):
+        if "gemini-3.1-flash-tts-preview" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, status, "down", {}, None)
+        return reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+
+
+def test_tous_les_modeles_satures(monkeypatch, gemini):
+    def fake(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 429, "quota", {}, None)
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize("Bonjour")
+    assert exc.value.code == "busy"
+
+
+def test_route_voix_saturee(client, gemini, monkeypatch):
+    def fake(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 429, "quota", {}, None)
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    r = call(client, "POST", "/voice/speak", text="Bonjour Yann")
+    assert r.status_code == 429 and r.get_json()["code"] == "voice_busy"
+    assert call(client, "GET", "/voice/config").get_json()["used"] == 0
+
+
+def test_modele_choisi_a_la_main_en_quota_ne_change_pas(monkeypatch, gemini):
+    urls = []
+
+    def fake(req, timeout=None):
+        urls.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 429, "quota", {}, None)
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.setenv("VOICE_MODEL", "mon-modele")
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize("Bonjour")
+    assert exc.value.code == "busy" and len(urls) == 1
+
+
+# --- réponse courte en conversation orale ------------------------------------------------------
+def test_consigne_orale_seulement_en_mode_voix():
+    import agent
+    assert "conversation orale" not in agent.system_prompt()
+    token = agent.SPOKEN.set(True)
+    try:
+        assert "conversation orale" in agent.system_prompt()
+        assert "français ou anglais" in agent.system_prompt(with_tools=False)
+    finally:
+        agent.SPOKEN.reset(token)
+    assert "conversation orale" not in agent.system_prompt()
+
+
+def test_le_message_vocal_active_la_consigne_puis_la_retire(client, monkeypatch):
+    import agent
+    seen = []
+
+    def fake_chat(user_id, text, role="owner", chat_id=None, private=False):
+        seen.append(agent.SPOKEN.get())
+        return "D'accord.", 0, []
+
+    monkeypatch.setattr(agent, "chat", fake_chat)
+    call(client, "POST", "/message", text="bonjour", voice=True)
+    call(client, "POST", "/message", text="bonjour")
+    call(client, "POST", "/message", text="bonjour", voice="oui")
+    assert seen == [True, False, False]
+    assert agent.SPOKEN.get() is False

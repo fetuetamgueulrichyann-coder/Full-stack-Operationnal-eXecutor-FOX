@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { AuthProvider } from "../auth/AuthContext";
 import { AppRoutes } from "../App";
 import { mockApi, USER, type Handler } from "../test/mockApi";
+import { clearSpeechCache, splitSpeech } from "../lib/voice";
 
 const REPLY = { reply: "Voici votre agenda.", chat_id: 1, private: false, pending: [] as unknown[] };
 
@@ -77,6 +78,7 @@ function open() {
 }
 
 beforeEach(() => {
+  clearSpeechCache();
   FakeAudio.last = null;
   FakeAudio.playImpl = () => Promise.resolve();
   FakeRecognition.last = null;
@@ -148,6 +150,88 @@ describe("Voix de FOX", () => {
   });
 });
 
+describe("Voix : découpage, cache, logo", () => {
+  it("coupe un long texte en deux morceaux au plus, la première phrase d'abord", () => {
+    const sentence = "Voici une phrase assez longue pour atteindre la taille minimale du premier morceau lu.";
+    const long = `${sentence} ${"Et voici la suite de la réponse. ".repeat(20)}`;
+    const parts = splitSpeech(long);
+    expect(parts).toHaveLength(2);
+    expect(parts[0]).toBe(sentence);
+    expect(parts[1].startsWith("Et voici la suite")).toBe(true);
+    expect(splitSpeech("Bonjour.")).toEqual(["Bonjour."]);
+    expect(splitSpeech("   ")).toEqual([]);
+  });
+
+  it("coupe un long texte sans ponctuation à un espace", () => {
+    const parts = splitSpeech("mot ".repeat(120));
+    expect(parts).toHaveLength(2);
+    expect(parts[0].length).toBeLessThanOrEqual(200);
+  });
+
+  it("lit la première phrase pendant que la suite se prépare, puis enchaîne", async () => {
+    const sentence = "Voici une phrase assez longue pour atteindre la taille minimale du premier morceau lu.";
+    const reply = `${sentence} ${"Et voici la suite de la réponse. ".repeat(20)}`;
+    const { speaks } = setup({ "POST /message": () => ({ body: { ...REPLY, reply } }) });
+    open();
+    await userEvent.type(await screen.findByRole("textbox", { name: "Message" }), "dis-moi tout");
+    await userEvent.click(screen.getByRole("button", { name: "Envoyer" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
+    await waitFor(() => expect(speaks).toHaveLength(2));
+    expect((speaks[0].body as { text: string }).text).toBe(sentence);
+    const firstAudio = FakeAudio.last;
+    act(() => firstAudio?.onended?.());
+    await waitFor(() => expect(FakeAudio.last).not.toBe(firstAudio));
+    expect(FakeAudio.last?.play).toHaveBeenCalled();
+    act(() => FakeAudio.last?.onended?.());
+    expect(await screen.findByRole("button", { name: "Écouter la réponse" })).toBeInTheDocument();
+  });
+
+  it("n'interroge pas le serveur une seconde fois pour le même texte", async () => {
+    const { speaks } = setup();
+    open();
+    await ask();
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
+    act(() => FakeAudio.last?.onended?.());
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalledTimes(1));
+    expect(speaks).toHaveLength(1);
+  });
+
+  it("anime le logo pendant que FOX parle, et le laisse tranquille ensuite", async () => {
+    setup();
+    open();
+    await ask();
+    expect(document.querySelector(".assistant.speaking")).toBeNull();
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    expect(await screen.findByText("FOX parle…")).toBeInTheDocument();
+    expect(document.querySelector(".assistant.speaking")).not.toBeNull();
+    expect(document.querySelector(".voice-stage.speaking .voice-logo")).not.toBeNull();
+    act(() => FakeAudio.last?.onended?.());
+    await waitFor(() => expect(document.querySelector(".assistant.speaking")).toBeNull());
+    expect(screen.queryByText("FOX parle…")).not.toBeInTheDocument();
+  });
+
+  it("le bouton Couper arrête la voix", async () => {
+    setup();
+    open();
+    await ask();
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Couper la voix" }));
+    expect(FakeAudio.last?.pause).toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByText("FOX parle…")).not.toBeInTheDocument());
+  });
+
+  it("explique que la voix est saturée", async () => {
+    setup({}, { speakStatus: 429, speakCode: "voice_busy" });
+    open();
+    await ask();
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    expect(await screen.findByText(/voix est saturée/)).toBeInTheDocument();
+  });
+});
+
 describe("Conversation orale", () => {
   beforeEach(() => {
     (window as unknown as Record<string, unknown>).webkitSpeechRecognition = FakeRecognition;
@@ -167,6 +251,21 @@ describe("Conversation orale", () => {
 
     act(() => FakeAudio.last?.onended?.());
     await waitFor(() => expect(FakeRecognition.starts).toBe(2));
+  });
+
+  it("demande une réponse courte, faite pour être dite : le message part avec voice: true", async () => {
+    const { calls } = setup();
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Démarrer la conversation orale" }));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "bonjour" }]] }));
+    await waitFor(() => expect(calls.find((c) => c.path === "/message")?.body).toEqual({ text: "bonjour", voice: true }));
+  });
+
+  it("un message écrit n'envoie pas voice", async () => {
+    const { calls } = setup();
+    open();
+    await ask("bonjour");
+    expect(calls.find((c) => c.path === "/message")?.body).toEqual({ text: "bonjour" });
   });
 
   it("n'écoute pas pendant qu'une action attend une confirmation", async () => {

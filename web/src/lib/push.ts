@@ -4,6 +4,7 @@ export interface PushConfig {
   enabled: boolean;
   public_key: string | null;
   devices: number;
+  missing?: string[];
 }
 
 export const pushSupported = (): boolean =>
