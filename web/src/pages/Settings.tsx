@@ -4,6 +4,7 @@ import { describeError } from "../api/errors";
 import type { BriefingSettings, Business, TimezoneInfo } from "../api/types";
 import { Markdown } from "../components/Markdown";
 import { NotificationsCard } from "../components/NotificationsCard";
+import { VoiceCard } from "../components/VoiceCard";
 import { useAuth } from "../auth/AuthContext";
 import { timeOf } from "../lib/dates";
 
@@ -124,6 +125,7 @@ export function Settings() {
         </section>
 
         <NotificationsCard />
+        <VoiceCard />
 
         <section className="card" aria-label="Briefing du matin">
           <div className="row-between">

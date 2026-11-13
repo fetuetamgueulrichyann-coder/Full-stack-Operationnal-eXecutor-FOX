@@ -221,3 +221,14 @@ export interface LedgerSummary {
   entries: number;
   by_category: { kind: "recette" | "depense"; category: string; total: string; total_label: string }[];
 }
+
+export interface VoiceConfig {
+  enabled: boolean;
+  providers: string[];
+  voice_choice: boolean;
+  voice: string;
+  voices: { name: string; label: string }[];
+  speed: number;
+  daily_limit: number;
+  used: number;
+}

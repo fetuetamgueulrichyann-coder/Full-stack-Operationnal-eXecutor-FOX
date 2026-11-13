@@ -43,8 +43,9 @@ export function clearSpeechCache(): void {
 }
 
 /** Demande le son d'un texte au serveur (clé Gemini côté serveur) et le renvoie sous forme de Blob. */
-export async function fetchSpeech(text: string, signal?: AbortSignal): Promise<Blob> {
-  const hit = cache.get(text);
+export async function fetchSpeech(text: string, signal?: AbortSignal, voice?: string): Promise<Blob> {
+  const key = `${voice ?? ""}|${text}`;
+  const hit = cache.get(key);
   if (hit) return hit;
   let response: Response;
   try {
@@ -52,7 +53,7 @@ export async function fetchSpeech(text: string, signal?: AbortSignal): Promise<B
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json", "X-CSRF-Token": getCsrfToken() },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(voice ? { text, voice } : { text }),
       signal,
     });
   } catch (error) {
@@ -69,7 +70,7 @@ export async function fetchSpeech(text: string, signal?: AbortSignal): Promise<B
     throw new Error(MESSAGES[code] ?? "La voix a échoué. Réessayez.");
   }
   const blob = await response.blob();
-  cache.set(text, blob);
+  cache.set(key, blob);
   if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value as string);
   return blob;
 }
@@ -99,7 +100,12 @@ function audioGraph(): Graph | null {
 }
 
 /** Branche la lecture sur l'analyseur ; renvoie de quoi débrancher, ou null si le navigateur ne sait pas. */
-function listen(el: HTMLAudioElement): { disconnect: () => void; read: () => number } | null {
+interface Tap {
+  disconnect: () => void;
+  read: () => { level: number; tone: number };
+}
+
+function listen(el: HTMLAudioElement): Tap | null {
   const g = audioGraph();
   if (!g) return null;
   try {
@@ -107,6 +113,8 @@ function listen(el: HTMLAudioElement): { disconnect: () => void; read: () => num
     const source = g.ctx.createMediaElementSource(el);
     source.connect(g.analyser);
     const buf = new Uint8Array(g.analyser.fftSize);
+    const freq = new Uint8Array(g.analyser.frequencyBinCount);
+    const hzPerBin = g.ctx.sampleRate / g.analyser.fftSize;
     return {
       disconnect: () => {
         try {
@@ -122,7 +130,16 @@ function listen(el: HTMLAudioElement): { disconnect: () => void; read: () => num
           const v = (buf[i] - 128) / 128;
           sum += v * v;
         }
-        return Math.min(1, Math.sqrt(sum / buf.length) * 3.2);
+        // Tonalité : centre de gravité du spectre (voix grave ~ 300 Hz, voix claire et aiguë ~ 2 500 Hz), ramené à 0..1.
+        g.analyser.getByteFrequencyData(freq);
+        let weight = 0;
+        let moment = 0;
+        for (let i = 1; i < freq.length; i++) {
+          weight += freq[i];
+          moment += freq[i] * i * hzPerBin;
+        }
+        const hz = weight > 0 ? moment / weight : 0;
+        return { level: Math.min(1, Math.sqrt(sum / buf.length) * 3.2), tone: Math.max(0, Math.min(1, (hz - 300) / 2200)) };
       },
     };
   } catch {
@@ -132,17 +149,22 @@ function listen(el: HTMLAudioElement): { disconnect: () => void; read: () => num
 
 /**
  * Lecture à voix haute des réponses de FOX. `play` rend `true` si la lecture est allée jusqu'au bout.
- * `levelRef` suit le volume de la voix (0 à 1) : le logo s'en sert pour vibrer au rythme de la parole.
+ * `levelRef` (volume), `toneRef` (tonalité, grave à aiguë) et `beatRef` (impulsion sur les syllabes appuyées),
+ * tous de 0 à 1 : le logo s'en sert pour vibrer comme la voix.
  */
-export function useVoice() {
+export function useVoice(speed = 1) {
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
   const [state, setState] = useState<VoiceState>("idle");
   const [problem, setProblem] = useState<string | null>(null);
   const levelRef = useRef(0);
+  const toneRef = useRef(0.5);
+  const beatRef = useRef(0);
   const audio = useRef<HTMLAudioElement | null>(null);
   const controller = useRef<AbortController | null>(null);
   const finish = useRef<((completed: boolean) => void) | null>(null);
   const url = useRef<string | null>(null);
-  const tap = useRef<{ disconnect: () => void; read: () => number } | null>(null);
+  const tap = useRef<Tap | null>(null);
   const frame = useRef<number | null>(null);
 
   const stopMeter = useCallback(() => {
@@ -151,6 +173,8 @@ export function useVoice() {
     tap.current?.disconnect();
     tap.current = null;
     levelRef.current = 0;
+    toneRef.current = 0.5;
+    beatRef.current = 0;
   }, []);
 
   const releaseAudio = useCallback(() => {
@@ -183,10 +207,17 @@ export function useVoice() {
     (el: HTMLAudioElement) => {
       tap.current = listen(el);
       let smooth = 0;
+      let tone = 0.5;
       const tick = (now: number) => {
-        const raw = tap.current ? tap.current.read() : 0.35 + 0.25 * Math.sin(now / 180); // sans analyse : battement doux
-        smooth = Math.max(raw, smooth * 0.82);
+        // Sans analyse (navigateur limité) : un battement doux remplace la mesure.
+        const sample = tap.current ? tap.current.read() : { level: 0.35 + 0.25 * Math.sin(now / 180), tone: 0.5 + 0.25 * Math.sin(now / 700) };
+        // Rythme : un sursaut brusque du volume (début de mot, syllabe appuyée) donne une brève impulsion.
+        if (sample.level > smooth * 1.5 + 0.08) beatRef.current = 1;
+        else beatRef.current *= 0.86;
+        smooth = Math.max(sample.level, smooth * 0.82);
+        tone += (sample.tone - tone) * 0.15;
         levelRef.current = smooth;
+        toneRef.current = tone;
         frame.current = requestAnimationFrame(tick);
       };
       frame.current = requestAnimationFrame(tick);
@@ -202,6 +233,8 @@ export function useVoice() {
         const src = URL.createObjectURL(blob);
         url.current = src;
         const el = new Audio(src);
+        el.playbackRate = speedRef.current; // vitesse de lecture choisie, sans changer la hauteur de la voix
+        (el as HTMLAudioElement & { preservesPitch?: boolean }).preservesPitch = true;
         audio.current = el;
         finish.current = resolve;
         el.onended = () => {
@@ -224,7 +257,7 @@ export function useVoice() {
   );
 
   const play = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, voice?: string): Promise<boolean> => {
       cleanup();
       setProblem(null);
       const chunks = splitSpeech(text);
@@ -233,10 +266,10 @@ export function useVoice() {
       const ctl = new AbortController();
       controller.current = ctl;
       try {
-        const first = await fetchSpeech(chunks[0], ctl.signal);
+        const first = await fetchSpeech(chunks[0], ctl.signal, voice);
         if (ctl.signal.aborted) return false;
         // La suite se prépare pendant que la première phrase est lue.
-        const second = chunks[1] ? fetchSpeech(chunks[1], ctl.signal) : null;
+        const second = chunks[1] ? fetchSpeech(chunks[1], ctl.signal, voice) : null;
         second?.catch(() => undefined);
         if (!(await playBlob(first))) return false;
         if (second) {
@@ -258,5 +291,5 @@ export function useVoice() {
     [cleanup, playBlob],
   );
 
-  return { state, problem, play, stop: cleanup, levelRef };
+  return { state, problem, play, stop: cleanup, levelRef, toneRef, beatRef };
 }

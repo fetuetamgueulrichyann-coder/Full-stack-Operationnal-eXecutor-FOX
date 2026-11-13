@@ -333,6 +333,7 @@ def message():
             return jsonify(error="plafond journalier atteint", code="quota_exceeded", scope=exc.scope), 429
 
         spoken_token = agent.SPOKEN.set(data.get("voice") is True)
+        chat_started = time.monotonic()
         try:
             reply, tokens, pending = agent.chat(
                 user_id, text, role, chat_id=chat_id, private=private
@@ -352,6 +353,8 @@ def message():
             return jsonify(error="service indisponible"), 502
         finally:
             agent.SPOKEN.reset(spoken_token)
+        if data.get("voice") is True:
+            log.info("réponse orale : %d ms de réflexion", int((time.monotonic() - chat_started) * 1000))
 
         if tokens:
             db.add_tokens(user_id, tokens)
@@ -1426,15 +1429,49 @@ def voice_limit(role):
     return OWNER_VOICE_CHARS_PER_DAY if role == accounts.ROLE_OWNER else TESTER_VOICE_CHARS_PER_DAY
 
 
+def voice_config_payload(user):
+    saved = db.get_voice_settings(user["id"])
+    chain = speech.providers()
+    return dict(
+        enabled=speech.enabled(), providers=chain,
+        voice_choice=bool(chain) and chain[0] == "gemini",  # le choix de la voix ne vaut que pour Gemini
+        voice=saved["voice"] or speech.voice_name(), voices=[{"name": n, "label": l} for n, l in speech.GEMINI_VOICES],
+        speed=saved["speed"], daily_limit=voice_limit(user["role"]), used=db.voice_used(user["id"]),
+    )
+
+
 @app.get("/voice/config")
 def voice_config():
     user, error = chat_auth()
     if error:
         return error
-    return jsonify(
-        enabled=speech.enabled(), voice=speech.voice_name(),
-        daily_limit=voice_limit(user["role"]), used=db.voice_used(user["id"]),
-    )
+    return jsonify(voice_config_payload(user))
+
+
+@app.post("/voice/settings")
+def voice_settings_set():
+    """Voix et vitesse de lecture de l'utilisateur. `voice` : nom d'une voix Gemini (null = voix par défaut)."""
+    data = body()
+    user, error = authenticate(data)
+    if error:
+        return error
+    current = db.get_voice_settings(user["id"])
+    voice = current["voice"]
+    speed = current["speed"]
+    if "voice" in data:
+        if data["voice"] in (None, ""):
+            voice = None
+        elif speech.valid_voice(data["voice"]):
+            voice = data["voice"]
+        else:
+            return jsonify(error="voix inconnue"), 400
+    if "speed" in data:
+        speed = speech.valid_speed(data["speed"])
+        if speed is None:
+            return jsonify(error=f"speed doit être un nombre entre {speech.MIN_SPEED} et {speech.MAX_SPEED}"), 400
+    db.set_voice_settings(user["id"], voice, speed)
+    db.audit(user["id"], "voice_settings", None, {"voice": voice, "speed": speed})
+    return jsonify(voice_config_payload(user))
 
 
 @app.post("/voice/speak")
@@ -1454,12 +1491,17 @@ def voice_speak():
         return jsonify(error="rien à lire"), 400
     if not db.reserve_voice_chars(user["id"], len(spoken), voice_limit(user["role"])):
         return jsonify(error="plafond de voix atteint pour aujourd'hui", code="voice_quota"), 429
+    started = time.monotonic()
     try:
-        audio = speech.synthesize(spoken)
+        audio, mimetype, provider = speech.synthesize_audio(
+            spoken, voice=speech.valid_voice(data.get("voice")) or db.get_voice_settings(user["id"])["voice"],
+        )
     except speech.SpeechError as exc:
         db.release_voice_chars(user["id"], len(spoken))
         log.warning("synthèse vocale échouée (%s) : %s", exc.code, exc.message)
         if exc.code == "busy":
             return jsonify(error="la voix est saturée, réessayez dans un instant", code="voice_busy"), 429
         return jsonify(error="la voix est indisponible pour le moment", code="voice_unavailable"), 502
-    return Response(audio, mimetype="audio/wav", headers={"Cache-Control": "no-store"})
+    elapsed = int((time.monotonic() - started) * 1000)
+    log.info("voix : %d caractères, %d ms, moteur %s", len(spoken), elapsed, provider)
+    return Response(audio, mimetype=mimetype, headers={"Cache-Control": "no-store", "X-Voice-Provider": provider, "X-Voice-Ms": str(elapsed)})

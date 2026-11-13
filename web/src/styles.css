@@ -294,6 +294,8 @@ h1, h2 { margin: 0; }
 .entries .out { color: #b42318; }
 .f.month { flex-direction: column; gap: 4px; }
 
+input[type="range"] { width: 100%; accent-color: var(--accent, #c2410c); }
+
 /* --- Voix de FOX ----------------------------------------------------------- */
 .voice-toggle { width: 44px; height: 44px; border: 0; border-radius: 12px; background: transparent; color: var(--ink); display: grid; place-items: center; cursor: pointer; }
 .voice-toggle:hover { background: #eef1f4; }
@@ -302,10 +304,11 @@ h1, h2 { margin: 0; }
 .listen-btn:hover { background: #eef1f4; }
 .listen-btn:disabled { opacity: 0.6; cursor: default; }
 .voice-stage { display: flex; align-items: center; gap: 12px; padding: 10px 14px; margin: 0 0 8px; border-radius: 14px; background: #fde8e0; color: var(--accent-dark); font-size: 14px; }
-.voice-stage .listen-btn { margin-left: auto; color: inherit; }
+.voice-stage .listen-btn { color: inherit; }
+.voice-stage .listen-btn:first-of-type { margin-left: auto; }
 .voice-logo, .assistant.speaking > img { border-radius: 50%; will-change: transform; transition: transform 0.07s linear, box-shadow 0.07s linear; }
-.voice-logo { transform: scale(calc(1 + var(--voice-level, 0) * 0.3)); box-shadow: 0 0 0 calc(var(--voice-level, 0) * 12px) rgba(194, 65, 12, 0.22); }
-.assistant.speaking > img { transform: scale(calc(1 + var(--voice-level, 0) * 0.22)); box-shadow: 0 0 0 calc(var(--voice-level, 0) * 8px) rgba(194, 65, 12, 0.2); }
+.voice-logo { transform: scale(calc(1 + var(--voice-level, 0) * 0.26 + var(--voice-beat, 0) * 0.08)) rotate(calc((var(--voice-tone, 0.5) - 0.5) * 10deg)); box-shadow: 0 0 0 calc(var(--voice-level, 0) * 12px + var(--voice-beat, 0) * 4px) hsla(calc(12 + var(--voice-tone, 0.5) * 34), 90%, 52%, 0.26); }
+.assistant.speaking > img { transform: scale(calc(1 + var(--voice-level, 0) * 0.2 + var(--voice-beat, 0) * 0.06)) rotate(calc((var(--voice-tone, 0.5) - 0.5) * 8deg)); box-shadow: 0 0 0 calc(var(--voice-level, 0) * 8px) hsla(calc(12 + var(--voice-tone, 0.5) * 34), 90%, 52%, 0.22); }
 @media (prefers-reduced-motion: reduce) { .voice-logo, .assistant.speaking > img { transform: none; transition: none; } }
 
 /* --- Rappels ------------------------------------------------------------- */

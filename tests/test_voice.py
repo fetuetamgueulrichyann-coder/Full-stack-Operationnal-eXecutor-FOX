@@ -350,3 +350,227 @@ def test_le_message_vocal_active_la_consigne_puis_la_retire(client, monkeypatch)
     call(client, "POST", "/message", text="bonjour", voice="oui")
     assert seen == [True, False, False]
     assert agent.SPOKEN.get() is False
+
+
+# --- ElevenLabs et ordre des moteurs ------------------------------------------------------------
+MP3 = b"ID3\x04\x00\x00" + b"\x00" * 64
+
+
+@pytest.fixture
+def both(monkeypatch, gemini):
+    """Les deux moteurs configurés, ElevenLabs d'abord. `seen` : (moteur, requête) dans l'ordre des appels."""
+    monkeypatch.setenv("VOICE_PROVIDERS", "elevenlabs,gemini")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-key")
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "VOIX123")
+    monkeypatch.delenv("ELEVENLABS_MODEL", raising=False)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    seen = []
+    behaviour = {"eleven": lambda req: FakeResponse(MP3)}
+
+    def fake(req, timeout=None):
+        if "elevenlabs.io" in req.full_url:
+            seen.append(("elevenlabs", req))
+            return behaviour["eleven"](req)
+        seen.append(("gemini", req))
+        return reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    return seen, behaviour
+
+
+def http_error(url, code):
+    return urllib.error.HTTPError(url, code, "x", {}, None)
+
+
+def test_moteurs_par_defaut_gemini_seul(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.delenv("VOICE_PROVIDERS", raising=False)
+    monkeypatch.delenv("VOICE_PROVIDER", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    assert speech.providers() == ["gemini"]
+
+
+def test_elevenlabs_demande_une_cle_et_un_identifiant_de_voix(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.setenv("VOICE_PROVIDERS", "elevenlabs, gemini, inconnu, gemini")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "e")
+    monkeypatch.delenv("ELEVENLABS_VOICE_ID", raising=False)
+    assert speech.providers() == ["gemini"]
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "v")
+    assert speech.providers() == ["elevenlabs", "gemini"]
+
+
+def test_la_voix_marche_avec_elevenlabs_seul(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setenv("VOICE_PROVIDERS", "elevenlabs")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "e")
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "v")
+    assert speech.enabled() is True
+
+
+def test_elevenlabs_premier_mp3_et_cle_en_en_tete(both):
+    seen, _ = both
+    audio, mimetype, provider = speech.synthesize_audio("Bonjour **Yann**")
+    assert (audio, mimetype, provider) == (MP3, "audio/mpeg", "elevenlabs")
+    assert [name for name, _ in seen] == ["elevenlabs"]
+    req = seen[0][1]
+    assert "/text-to-speech/VOIX123?output_format=mp3_44100_128" in req.full_url
+    assert req.get_header("Xi-api-key") == "eleven-key" and "eleven-key" not in req.full_url
+    body = json.loads(req.data.decode())
+    assert body == {"text": "Bonjour Yann", "model_id": "eleven_flash_v2_5"}
+
+
+def test_identifiant_de_voix_encode_dans_l_adresse(both, monkeypatch):
+    seen, _ = both
+    monkeypatch.setenv("ELEVENLABS_VOICE_ID", "a/b c")
+    speech.synthesize_audio("Bonjour")
+    assert "/text-to-speech/a%2Fb%20c?" in seen[0][1].full_url
+
+
+def test_elevenlabs_sature_gemini_prend_le_relais_et_elevenlabs_est_mis_de_cote(both):
+    seen, behaviour = both
+    behaviour["eleven"] = lambda req: (_ for _ in ()).throw(http_error(req.full_url, 429))
+    audio, mimetype, provider = speech.synthesize_audio("Bonjour")
+    assert provider == "gemini" and mimetype == "audio/wav" and audio[:4] == b"RIFF"
+    seen.clear()
+    assert speech.synthesize_audio("Encore")[2] == "gemini"
+    assert [name for name, _ in seen] == ["gemini"]  # ElevenLabs est en pause : aucun appel inutile
+
+
+@pytest.mark.parametrize("code", [401, 402, 403])
+def test_cle_refusee_ou_voix_non_permise_pause_longue_et_repli(both, code):
+    seen, behaviour = both
+    behaviour["eleven"] = lambda req: (_ for _ in ()).throw(http_error(req.full_url, code))
+    assert speech.synthesize_audio("Bonjour")[2] == "gemini"
+    assert speech._cooling_now("elevenlabs")
+    assert speech._cooling["elevenlabs"] - speech.time.monotonic() > 300
+
+
+def test_modele_flash_inconnu_on_essaie_le_suivant(both):
+    seen, behaviour = both
+    calls = []
+
+    def eleven(req):
+        model = json.loads(req.data.decode())["model_id"]
+        calls.append(model)
+        if model == "eleven_flash_v2_5":
+            raise http_error(req.full_url, 400)
+        return FakeResponse(MP3)
+
+    behaviour["eleven"] = eleven
+    assert speech.synthesize_audio("Bonjour")[2] == "elevenlabs"
+    assert calls == ["eleven_flash_v2_5", "eleven_multilingual_v2"]
+
+
+def test_elevenlabs_seul_en_panne_erreur_claire(monkeypatch, both):
+    monkeypatch.setenv("VOICE_PROVIDERS", "elevenlabs")
+    seen, behaviour = both
+    behaviour["eleven"] = lambda req: (_ for _ in ()).throw(urllib.error.URLError("down"))
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize_audio("Bonjour")
+    assert exc.value.code == "upstream_error"
+    assert "eleven-key" not in exc.value.message
+
+
+def test_reponse_elevenlabs_vide(monkeypatch, both):
+    monkeypatch.setenv("VOICE_PROVIDERS", "elevenlabs")
+    seen, behaviour = both
+    behaviour["eleven"] = lambda req: FakeResponse(b"")
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize_audio("Bonjour")
+    assert exc.value.code == "empty_audio"
+
+
+def test_tous_satures_le_code_est_busy(both, monkeypatch):
+    def tout_en_429(req, timeout=None):
+        raise http_error(req.full_url, 429)
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", tout_en_429)
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize_audio("Bonjour")
+    assert exc.value.code == "busy"
+
+
+def test_route_renvoie_le_type_et_le_moteur(client, both):
+    r = call(client, "POST", "/voice/speak", text="Bonjour Yann")
+    assert r.status_code == 200 and r.mimetype == "audio/mpeg" and r.data == MP3
+    assert r.headers["X-Voice-Provider"] == "elevenlabs" and int(r.headers["X-Voice-Ms"]) >= 0
+
+
+# --- réglages de voix par utilisateur ----------------------------------------------------------
+def test_config_donne_les_voix_et_les_reglages_par_defaut(client, gemini):
+    got = call(client, "GET", "/voice/config").get_json()
+    assert got["voice"] == "Kore" and got["speed"] == 1.0 and got["voice_choice"] is True and got["providers"] == ["gemini"]
+    names = [v["name"] for v in got["voices"]]
+    assert len(names) == 30 and "Kore" in names and "Puck" in names
+    assert all(v["label"] for v in got["voices"])
+
+
+def test_enregistrer_voix_et_vitesse(client, gemini):
+    r = call(client, "POST", "/voice/settings", voice="Puck", speed=1.2)
+    assert r.status_code == 200 and r.get_json()["voice"] == "Puck" and r.get_json()["speed"] == 1.2
+    assert call(client, "GET", "/voice/config").get_json()["voice"] == "Puck"
+
+
+def test_la_vitesse_est_arrondie_et_bornee(client, gemini):
+    assert call(client, "POST", "/voice/settings", speed=1.23).get_json()["speed"] == 1.25
+    for bad in (0.5, 2, "vite", None, True, [1]):
+        assert call(client, "POST", "/voice/settings", speed=bad).status_code == 400
+    assert call(client, "GET", "/voice/config").get_json()["speed"] == 1.25
+
+
+@pytest.mark.parametrize("bad", ["Inconnue", "kore", 3, ["Kore"], "Kore'; DROP TABLE users;--"])
+def test_voix_inconnue_refusee(client, gemini, bad):
+    assert call(client, "POST", "/voice/settings", voice=bad).status_code == 400
+
+
+def test_voix_null_revient_a_la_voix_par_defaut(client, gemini):
+    call(client, "POST", "/voice/settings", voice="Puck")
+    assert call(client, "POST", "/voice/settings", voice=None).get_json()["voice"] == "Kore"
+
+
+def test_changer_la_vitesse_garde_la_voix(client, gemini):
+    call(client, "POST", "/voice/settings", voice="Puck")
+    got = call(client, "POST", "/voice/settings", speed=0.8).get_json()
+    assert got["voice"] == "Puck" and got["speed"] == 0.8
+
+
+def test_reglages_propres_a_chaque_utilisateur(client, friend, gemini):
+    call(client, "POST", "/voice/settings", voice="Puck", speed=1.4)
+    other = call(client, "GET", "/voice/config", telegram_id=OTHER).get_json()
+    assert other["voice"] == "Kore" and other["speed"] == 1.0
+
+
+def test_la_voix_enregistree_est_celle_envoyee_a_gemini(client, gemini):
+    call(client, "POST", "/voice/settings", voice="Puck")
+    call(client, "POST", "/voice/speak", text="Bonjour Yann")
+    cfg = gemini[-1]["generationConfig"]["speechConfig"]["voiceConfig"]
+    assert cfg["prebuiltVoiceConfig"]["voiceName"] == "Puck"
+
+
+def test_echantillon_voix_choisie_sans_enregistrer(client, gemini):
+    call(client, "POST", "/voice/speak", text="Bonjour Yann", voice="Charon")
+    assert gemini[-1]["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Charon"
+    assert call(client, "GET", "/voice/config").get_json()["voice"] == "Kore"
+
+
+def test_voix_inconnue_dans_speak_est_ignoree(client, gemini):
+    assert call(client, "POST", "/voice/speak", text="Bonjour Yann", voice="Pirate").status_code == 200
+    assert gemini[-1]["generationConfig"]["speechConfig"]["voiceConfig"]["prebuiltVoiceConfig"]["voiceName"] == "Kore"
+
+
+def test_choix_de_voix_inutile_si_elevenlabs_est_premier(client, both):
+    got = call(client, "GET", "/voice/config").get_json()
+    assert got["voice_choice"] is False and got["providers"] == ["elevenlabs", "gemini"]
+
+
+def test_les_reglages_sont_audites(client, gemini):
+    import db
+    call(client, "POST", "/voice/settings", voice="Puck")
+    with db.cursor() as cur:
+        cur.execute("SELECT count(*) FROM audit_log WHERE event = 'voice_settings'")
+        assert cur.fetchone()[0] == 1
+
+
+def test_reglages_sans_connexion(client, gemini):
+    assert client.post("/voice/settings", json={"voice": "Puck"}).status_code == 401

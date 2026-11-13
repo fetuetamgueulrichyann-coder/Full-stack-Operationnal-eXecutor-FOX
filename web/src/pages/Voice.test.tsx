@@ -6,6 +6,9 @@ import { AppRoutes } from "../App";
 import { mockApi, USER, type Handler } from "../test/mockApi";
 import { clearSpeechCache, splitSpeech } from "../lib/voice";
 
+const barge = vi.hoisted(() => ({ cb: null as null | (() => void), start: vi.fn() }));
+vi.mock("../lib/bargein", async (original) => ({ ...(await original<typeof import("../lib/bargein")>()), startBargeIn: barge.start }));
+
 const REPLY = { reply: "Voici votre agenda.", chat_id: 1, private: false, pending: [] as unknown[] };
 
 function routes(extra: Record<string, Handler> = {}, voiceEnabled = true): Record<string, Handler> {
@@ -28,6 +31,7 @@ class FakeAudio {
   }
   play = vi.fn(() => FakeAudio.playImpl());
   pause = vi.fn();
+  playbackRate = 1;
 }
 
 class FakeRecognition {
@@ -78,6 +82,13 @@ function open() {
 }
 
 beforeEach(() => {
+  barge.cb = null;
+  barge.start.mockReset();
+  barge.start.mockImplementation(async (cb: () => void) => {
+    barge.cb = cb;
+    return () => undefined;
+  });
+  window.localStorage.clear();
   clearSpeechCache();
   FakeAudio.last = null;
   FakeAudio.playImpl = () => Promise.resolve();
@@ -268,16 +279,122 @@ describe("Conversation orale", () => {
     expect(calls.find((c) => c.path === "/message")?.body).toEqual({ text: "bonjour" });
   });
 
-  it("n'écoute pas pendant qu'une action attend une confirmation", async () => {
-    const pending = [{ id: "a1", summary: "Créer le rendez-vous", tool: "create_event", expires_at: "" }];
-    setup({ "POST /message": () => ({ body: { ...REPLY, pending } }) });
+  it("coupe la parole à FOX : la voix s'arrête et l'écoute reprend", async () => {
+    const { calls } = setup();
     open();
     await userEvent.click(await screen.findByRole("button", { name: "Démarrer la conversation orale" }));
-    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "crée un rendez-vous" }]] }));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "bonjour" }]] }));
     await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
-    act(() => FakeAudio.last?.onended?.());
-    await screen.findByText("Créer le rendez-vous");
+    await waitFor(() => expect(barge.start).toHaveBeenCalledTimes(1));
     expect(FakeRecognition.starts).toBe(1);
+    act(() => barge.cb?.());
+    expect(FakeAudio.last?.pause).toHaveBeenCalled();
+    await waitFor(() => expect(FakeRecognition.starts).toBe(2));
+    // ce qui est dit ensuite part normalement
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "non attends" }]] }));
+    await waitFor(() => expect(calls.filter((c) => c.path === "/message")).toHaveLength(2));
+  });
+
+  it("l'interruption peut être désactivée, et le choix est gardé", async () => {
+    setup();
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Démarrer la conversation orale" }));
+    await userEvent.click(screen.getByRole("button", { name: /Interruption : oui/ }));
+    expect(screen.getByRole("button", { name: /Interruption : non/ })).toBeInTheDocument();
+    expect(window.localStorage.getItem("fox_barge_in")).toBe("0");
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "bonjour" }]] }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
+    expect(barge.start).not.toHaveBeenCalled();
+  });
+
+  it("pas de surveillance du micro quand on écoute une réponse hors conversation orale", async () => {
+    setup();
+    open();
+    await ask();
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
+    expect(barge.start).not.toHaveBeenCalled();
+  });
+
+  const ONE = [{ id: "a1", summary: "Créer le rendez-vous « Dentiste » demain à 10 h", tool: "create_event", expires_at: "" }];
+
+  async function sayAndWaitForAnswer(pending: unknown[], extra: Record<string, Handler> = {}) {
+    const api = setup({ "POST /message": () => ({ body: { ...REPLY, reply: "Je prépare le rendez-vous.", pending } }), ...extra });
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Démarrer la conversation orale" }));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "crée un rendez-vous demain à dix heures" }]] }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
+    return api;
+  }
+
+  it("lit l'action en attente en entier et attend un oui ou un non à voix haute", async () => {
+    const { speaks } = await sayAndWaitForAnswer(ONE);
+    const said = (speaks[0].body as { text: string }).text;
+    expect(said).toContain("Je prépare le rendez-vous.");
+    expect(said).toContain("Dentiste");
+    expect(said).toContain("Dites oui pour confirmer");
+    expect(FakeRecognition.starts).toBe(1);
+    act(() => FakeAudio.last?.onended?.());
+    await waitFor(() => expect(FakeRecognition.starts).toBe(2));
+  });
+
+  it("« oui » confirme l'action sans passer par le modèle, puis FOX annonce le résultat", async () => {
+    const { calls, speaks } = await sayAndWaitForAnswer(ONE, { "POST /actions/a1/confirm": () => ({ body: { reply: "C'est fait, rendez-vous créé." } }) });
+    act(() => FakeAudio.last?.onended?.());
+    await waitFor(() => expect(FakeRecognition.starts).toBe(2));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "Oui !" }]] }));
+    await waitFor(() => expect(calls.some((c) => c.method === "POST" && c.path === "/actions/a1/confirm")).toBe(true));
+    expect(calls.filter((c) => c.path === "/message")).toHaveLength(1); // « oui » n'a pas été envoyé au modèle
+    expect(await screen.findByText("Action confirmée")).toBeInTheDocument();
+    await waitFor(() => expect(speaks).toHaveLength(2));
+    expect((speaks[1].body as { text: string }).text).toBe("C'est fait, rendez-vous créé.");
+    act(() => FakeAudio.last?.onended?.());
+    await waitFor(() => expect(FakeRecognition.starts).toBe(3));
+  });
+
+  it("« annule » annule l'action", async () => {
+    const { calls } = await sayAndWaitForAnswer(ONE, { "POST /actions/a1/cancel": () => ({ body: { reply: "D'accord, annulé." } }) });
+    act(() => FakeAudio.last?.onended?.());
+    await waitFor(() => expect(FakeRecognition.starts).toBe(2));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "annule" }]] }));
+    await waitFor(() => expect(calls.some((c) => c.path === "/actions/a1/cancel")).toBe(true));
+    expect(calls.some((c) => c.path === "/actions/a1/confirm")).toBe(false);
+    expect(await screen.findByText("Action annulée")).toBeInTheDocument();
+  });
+
+  it("une réponse ambiguë ne confirme rien : elle repart comme un message, l'action reste en attente", async () => {
+    const { calls } = await sayAndWaitForAnswer(ONE);
+    act(() => FakeAudio.last?.onended?.());
+    await waitFor(() => expect(FakeRecognition.starts).toBe(2));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "oui mais plutôt à quinze heures" }]] }));
+    await waitFor(() => expect(calls.filter((c) => c.path === "/message")).toHaveLength(2));
+    expect(calls.some((c) => c.path.startsWith("/actions/"))).toBe(false);
+    expect(screen.getAllByText("Action en attente").length).toBeGreaterThan(0);
+  });
+
+  it("avec plusieurs actions, pas de confirmation orale : FOX n'écoute pas", async () => {
+    await sayAndWaitForAnswer([...ONE, { id: "a2", summary: "Créer la tâche Appeler Paul", tool: "create_task", expires_at: "" }]);
+    act(() => FakeAudio.last?.onended?.());
+    await screen.findAllByText("Action en attente");
+    expect(FakeRecognition.starts).toBe(1);
+  });
+
+  it("un « oui » dit plus tard, sans action en attente, est un message ordinaire", async () => {
+    const { calls } = setup();
+    open();
+    await userEvent.click(await screen.findByRole("button", { name: "Démarrer la conversation orale" }));
+    act(() => FakeRecognition.last?.onresult?.({ results: [[{ transcript: "oui" }]] }));
+    await waitFor(() => expect(calls.find((c) => c.path === "/message")?.body).toMatchObject({ text: "oui" }));
+    expect(calls.some((c) => c.path.startsWith("/actions/"))).toBe(false);
+  });
+
+  it("utilise la vitesse choisie dans les réglages", async () => {
+    setup({ "GET /voice/config": () => ({ body: { enabled: true, voice: "Kore", speed: 1.3, daily_limit: 4000, used: 0 } }) });
+    open();
+    await ask();
+    await userEvent.click(await screen.findByRole("button", { name: "Écouter la réponse" }));
+    await waitFor(() => expect(FakeAudio.last?.play).toHaveBeenCalled());
+    expect(FakeAudio.last?.playbackRate).toBe(1.3);
   });
 
   it("l'arrêt coupe la voix et l'écoute", async () => {

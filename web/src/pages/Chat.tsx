@@ -5,6 +5,8 @@ import type { ChatsResponse, ChatSummary, HistoryMessage, MessageResponse, Pendi
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { useDictation } from "../lib/dictation";
+import { startBargeIn } from "../lib/bargein";
+import { parseConfirmation } from "../lib/confirmation";
 import { useVoice } from "../lib/voice";
 import logo from "../assets/fox-logo.png";
 
@@ -49,16 +51,32 @@ export function Chat() {
   const [showList, setShowList] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const [voiceSpeed, setVoiceSpeed] = useState(1);
+  const awaiting = useRef<{ bubbleId: string; actionId: string } | null>(null);
   const [voiceMode, setVoiceMode] = useState(false);
   const [listenId, setListenId] = useState<string | null>(null);
   const voiceModeRef = useRef(false);
   const mainRef = useRef<HTMLElement | null>(null);
   const sendRef = useRef<(message: string) => Promise<void>>(async () => undefined);
-  const voice = useVoice();
+  const decideRef = useRef<(bubbleId: string, actionId: string, accept: boolean, spoken?: boolean) => Promise<void>>(async () => undefined);
+  const voice = useVoice(voiceSpeed);
+  const [bargeIn, setBargeIn] = useState(() => {
+    try {
+      return window.localStorage.getItem("fox_barge_in") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const interruptRef = useRef<() => void>(() => undefined);
   const dictation = useDictation((spoken) => {
     // En conversation orale, ce qui est dit part tout de suite ; sinon, le texte attend dans le champ.
-    if (voiceModeRef.current) void sendRef.current(spoken);
-    else setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken));
+    if (voiceModeRef.current) {
+      const pending = awaiting.current;
+      awaiting.current = null;
+      const verdict = pending ? parseConfirmation(spoken) : null;
+      if (pending && verdict) void decideRef.current(pending.bubbleId, pending.actionId, verdict === "yes", true);
+      else void sendRef.current(spoken); // ni oui ni non : c'est un message ordinaire (l'action reste en attente)
+    } else setText((current) => (current.trim() ? `${current.trim()} ${spoken}` : spoken));
   });
 
   const title = chats.find((c) => c.id === activeId);
@@ -109,9 +127,11 @@ export function Chat() {
 
   useEffect(() => {
     let cancelled = false;
-    api<{ enabled: boolean }>("/voice/config")
+    api<{ enabled: boolean; speed?: number }>("/voice/config")
       .then((data) => {
-        if (!cancelled) setVoiceEnabled(data.enabled === true);
+        if (cancelled) return;
+        setVoiceEnabled(data.enabled === true);
+        if (typeof data.speed === "number") setVoiceSpeed(data.speed);
       })
       .catch(() => undefined);
     return () => {
@@ -129,14 +149,47 @@ export function Chat() {
     let raf = 0;
     const tick = () => {
       el.style.setProperty("--voice-level", voice.levelRef.current.toFixed(3));
+      el.style.setProperty("--voice-tone", voice.toneRef.current.toFixed(3));
+      el.style.setProperty("--voice-beat", voice.beatRef.current.toFixed(3));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
       el.style.setProperty("--voice-level", "0");
+      el.style.setProperty("--voice-beat", "0");
     };
-  }, [voice.state, voice.levelRef]);
+  }, [voice.state, voice.levelRef, voice.toneRef, voice.beatRef]);
+
+  // Interruption : pendant que FOX parle en conversation orale, le micro surveille la voix de l'utilisateur.
+  interruptRef.current = () => {
+    voice.stop();
+    setListenId(null);
+    dictation.start();
+  };
+  useEffect(() => {
+    if (!(voiceMode && bargeIn && voice.state === "playing")) return;
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    void startBargeIn(() => interruptRef.current()).then((fn) => {
+      if (cancelled) fn();
+      else stop = fn;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, [voiceMode, bargeIn, voice.state]);
+
+  function toggleBargeIn() {
+    const next = !bargeIn;
+    setBargeIn(next);
+    try {
+      window.localStorage.setItem("fox_barge_in", next ? "1" : "0");
+    } catch {
+      // réglage non mémorisé : sans importance
+    }
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: "end" });
@@ -213,10 +266,11 @@ export function Chat() {
       const data = await api<MessageResponse>("/message", { method: "POST", body, signal: controller.signal });
       setPrivateMode(data.private);
       if (data.chat_id !== null) setActiveId(data.chat_id);
+      const bubbleId = nextId();
       setBubbles((current) => [
         ...current,
         {
-          id: nextId(),
+          id: bubbleId,
           role: "assistant",
           text: data.reply,
           actions: data.pending.map((p) => ({ ...p, state: "open" as const })),
@@ -225,9 +279,17 @@ export function Chat() {
       setLastText("");
       void refreshChats().catch(() => undefined);
       if (voiceModeRef.current) {
-        // Conversation orale : FOX répond à voix haute, puis écoute de nouveau (sauf s'il attend une confirmation).
-        const finished = await voice.play(data.reply);
-        if (finished && voiceModeRef.current && data.pending.length === 0) dictation.start();
+        // Conversation orale : FOX répond à voix haute, puis écoute de nouveau.
+        // Une seule action en attente : il la lit en entier et attend un « oui » ou un « non » à voix haute.
+        const single = data.pending.length === 1 ? data.pending[0] : null;
+        const spoken = single
+          ? `${data.reply} ${single.summary}. Dites oui pour confirmer, ou non pour annuler.`
+          : data.reply;
+        const finished = await voice.play(spoken);
+        if (finished && voiceModeRef.current && (data.pending.length === 0 || single)) {
+          if (single) awaiting.current = { bubbleId, actionId: single.id };
+          dictation.start();
+        }
       }
     } catch (e) {
       // Le message a peut-être été traité : on garde le texte pour « Réessayer » sans le perdre.
@@ -240,7 +302,7 @@ export function Chat() {
     }
   }
 
-  async function decide(bubbleId: string, actionId: string, accept: boolean) {
+  async function decide(bubbleId: string, actionId: string, accept: boolean, spoken = false) {
     const update = (state: ActionState) =>
       setBubbles((current) =>
         current.map((b) =>
@@ -249,22 +311,30 @@ export function Chat() {
             : b,
         ),
       );
+    if (awaiting.current?.actionId === actionId) awaiting.current = null;
     setError("");
     update("working");
     try {
       const data = await api<{ reply: string }>(`/actions/${actionId}/${accept ? "confirm" : "cancel"}`, { method: "POST" });
       update(accept ? "confirmed" : "cancelled");
       setBubbles((current) => [...current, { id: nextId(), role: "assistant", text: data.reply }]);
+      if (spoken && voiceModeRef.current) {
+        const finished = await voice.play(data.reply);
+        if (finished && voiceModeRef.current) dictation.start();
+      }
     } catch (e) {
       update("open");
       setError(describeError(e));
+      if (spoken && voiceModeRef.current) dictation.start();
     }
   }
 
   sendRef.current = send;
+  decideRef.current = decide;
 
   function toggleVoiceMode() {
     if (voiceMode) {
+      awaiting.current = null;
       voiceModeRef.current = false;
       setVoiceMode(false);
       voice.stop();
@@ -426,6 +496,17 @@ export function Chat() {
                   : sending ? "FOX réfléchit…"
                   : dictation.listening ? "Je vous écoute, parlez…" : "Conversation orale active"}
               </span>
+              {voiceMode && (
+                <button
+                  type="button"
+                  className="listen-btn"
+                  aria-pressed={bargeIn}
+                  title="Avec un casque, vous pouvez couper la parole à FOX. Sans casque, désactivez si FOX s'interrompt tout seul."
+                  onClick={toggleBargeIn}
+                >
+                  Interruption : {bargeIn ? "oui" : "non"}
+                </button>
+              )}
               {voice.state !== "idle" && (
                 <button type="button" className="listen-btn" aria-label="Couper la voix" onClick={() => { voice.stop(); setListenId(null); }}>
                   <Icon name="stop" size={16} /> Couper

@@ -1508,3 +1508,21 @@ def release_voice_chars(user_id, chars):
             "UPDATE voice_usage SET chars = GREATEST(chars - %s, 0) WHERE user_id = %s AND day = (now() AT TIME ZONE 'utc')::date",
             (chars, user_id),
         )
+
+
+def get_voice_settings(user_id):
+    with cursor() as cur:
+        cur.execute("SELECT voice, speed FROM voice_settings WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+    return {"voice": row[0], "speed": float(row[1])} if row else {"voice": None, "speed": 1.0}
+
+
+def set_voice_settings(user_id, voice, speed):
+    with cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO voice_settings (user_id, voice, speed) VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET voice = EXCLUDED.voice, speed = EXCLUDED.speed, updated_at = now()
+            """,
+            (user_id, voice, speed),
+        )
