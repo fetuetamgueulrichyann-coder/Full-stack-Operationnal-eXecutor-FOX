@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { api } from "../api/client";
 import { describeError } from "../api/errors";
 import type { ChatsResponse, ChatSummary, HistoryMessage, MessageResponse, PendingAction } from "../api/types";
+import { AttachmentTray, BubbleFiles, toBubbleFile, type BubbleFile } from "../components/AttachmentTray";
+import { CameraDialog } from "../components/CameraDialog";
 import { Icon } from "../components/Icon";
 import { Markdown } from "../components/Markdown";
 import { useDictation } from "../lib/dictation";
 import { startBargeIn } from "../lib/bargein";
 import { parseConfirmation } from "../lib/confirmation";
+import { ACCEPT, canUseWebcam, hasTouchCamera } from "../lib/attachments";
+import { useAttachments } from "../lib/useAttachments";
 import { useVoice } from "../lib/voice";
 import logo from "../assets/fox-logo.png";
 
@@ -23,6 +27,7 @@ interface Bubble {
   id: string;
   role: "user" | "assistant";
   text: string;
+  files?: BubbleFile[];
   actions?: ChatAction[];
 }
 
@@ -48,6 +53,11 @@ export function Chat() {
   const [slow, setSlow] = useState(false);
   const [error, setError] = useState("");
   const [lastText, setLastText] = useState("");
+  const [lastFiles, setLastFiles] = useState<BubbleFile[]>([]);
+  const attach = useAttachments();
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  const photoInput = useRef<HTMLInputElement | null>(null);
+  const [camera, setCamera] = useState(false);
   const [showList, setShowList] = useState(false);
   const endRef = useRef<HTMLDivElement | null>(null);
   const [voiceEnabled, setVoiceEnabled] = useState(false);
@@ -90,7 +100,7 @@ export function Chat() {
 
   const loadMessages = useCallback(async (chatId: number) => {
     const data = await api<{ messages: HistoryMessage[] }>(`/chats/${chatId}/messages`);
-    const history: Bubble[] = data.messages.map((m) => ({ id: m.id, role: m.role, text: m.text ?? "" }));
+    const history: Bubble[] = data.messages.map((m) => ({ id: m.id, role: m.role, text: m.text ?? "", files: m.files?.length ? m.files.map(toBubbleFile) : undefined }));
     // Les actions encore en attente (le rechargement de la page ne doit pas les faire disparaître).
     try {
       const open = await api<{ actions: PendingAction[] }>("/actions/pending");
@@ -246,26 +256,34 @@ export function Chat() {
     }
   }
 
-  async function send(message: string) {
+  async function send(message: string, sentFiles: BubbleFile[] = []) {
     const clean = message.trim();
-    if (!clean || sending) return;
+    if ((!clean && sentFiles.length === 0) || sending) return;
     setError("");
     setSending(true);
     setSlow(false);
     setLastText(clean);
+    setLastFiles(sentFiles);
     setText("");
-    setBubbles((current) => [...current, { id: nextId(), role: "user", text: clean }]);
+    const userBubbleId = nextId();
+    setBubbles((current) => [...current, { id: userBubbleId, role: "user", text: clean, files: sentFiles.length ? sentFiles : undefined }]);
 
     const controller = new AbortController();
     const abort = window.setTimeout(() => controller.abort(), REPLY_TIMEOUT_MS);
     const slowTimer = window.setTimeout(() => setSlow(true), SLOW_HINT_MS);
     try {
-      const body: { text: string; chat_id?: number; voice?: boolean } = { text: clean };
+      const body: { text: string; chat_id?: number; voice?: boolean; files?: string[] } = { text: clean };
+      const ids = sentFiles.flatMap((f) => (f.id ? [f.id] : []));
+      if (ids.length > 0) body.files = ids;
       if (voiceModeRef.current) body.voice = true; // FOX répond court, fait pour être dit à voix haute
       if (activeId !== null && !privateMode) body.chat_id = activeId;
       const data = await api<MessageResponse>("/message", { method: "POST", body, signal: controller.signal });
       setPrivateMode(data.private);
       if (data.chat_id !== null) setActiveId(data.chat_id);
+      if (data.private && sentFiles.length > 0) {
+        // Mode privé : le serveur n'a rien gardé, les fichiers de la bulle ne sont plus téléchargeables.
+        setBubbles((current) => current.map((b) => (b.id === userBubbleId ? { ...b, files: b.files?.map((f) => ({ ...f, id: undefined })) } : b)));
+      }
       const bubbleId = nextId();
       setBubbles((current) => [
         ...current,
@@ -277,6 +295,7 @@ export function Chat() {
         },
       ]);
       setLastText("");
+      setLastFiles([]);
       void refreshChats().catch(() => undefined);
       if (voiceModeRef.current) {
         // Conversation orale : FOX répond à voix haute, puis écoute de nouveau.
@@ -361,7 +380,22 @@ export function Chat() {
 
   function onSubmit(event: FormEvent) {
     event.preventDefault();
-    void send(text);
+    if (attach.busy) return;
+    const sent: BubbleFile[] = attach.ready.map((i) => ({ name: i.name, kind: i.kind ?? "text", size: i.size, id: i.id, url: i.previewUrl }));
+    attach.release();
+    void send(text, sent);
+  }
+
+  function onPicked(event: ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(event.target.files ?? []);
+    event.target.value = ""; // permet de rechoisir le même fichier
+    if (picked.length > 0) attach.add(picked);
+  }
+
+  function takePhoto() {
+    // Téléphone : l'appareil photo s'ouvre directement. Ordinateur : la webcam, sinon le choix d'un fichier.
+    if (hasTouchCamera() || !canUseWebcam()) photoInput.current?.click();
+    else setCamera(true);
   }
 
   return (
@@ -430,6 +464,7 @@ export function Chat() {
           {bubbles.map((bubble, index) =>
             bubble.role === "user" ? (
               <div key={bubble.id} className="bubble user">
+                {bubble.files && <BubbleFiles files={bubble.files} />}
                 {bubble.text}
               </div>
             ) : (
@@ -477,8 +512,8 @@ export function Chat() {
           <div className="banner-error inline" role="alert">
             <Icon name="alert" />
             <span>{error}</span>
-            {lastText && (
-              <button type="button" className="link-btn" onClick={() => void send(lastText)}>
+            {(lastText || lastFiles.length > 0) && (
+              <button type="button" className="link-btn" onClick={() => void send(lastText, lastFiles)}>
                 Réessayer
               </button>
             )}
@@ -514,7 +549,17 @@ export function Chat() {
               )}
             </div>
           )}
+          <AttachmentTray items={attach.items} onRemove={attach.remove} />
+          {attach.notice && <span className="banner error" role="alert">{attach.notice}</span>}
           <div className="composer-box">
+            <button type="button" className="attach-btn" aria-label="Joindre un fichier" title="Joindre un fichier" onClick={() => fileInput.current?.click()}>
+              <Icon name="paperclip" />
+            </button>
+            <button type="button" className="attach-btn" aria-label="Prendre une photo" title="Prendre une photo" onClick={takePhoto}>
+              <Icon name="camera" />
+            </button>
+            <input ref={fileInput} type="file" className="sr-only" tabIndex={-1} aria-label="Choisir des fichiers à joindre" multiple accept={ACCEPT} onChange={onPicked} />
+            <input ref={photoInput} type="file" className="sr-only" tabIndex={-1} aria-label="Prendre une photo avec l'appareil" accept="image/*" capture="environment" onChange={onPicked} />
             <label htmlFor="message" className="sr-only">
               Message
             </label>
@@ -549,15 +594,24 @@ export function Chat() {
                 <Icon name="mic" />
               </button>
             )}
-            <button type="submit" className="send" aria-label="Envoyer" disabled={sending || !text.trim()}>
+            <button type="submit" className="send" aria-label="Envoyer" disabled={sending || attach.busy || (!text.trim() && attach.ready.length === 0)}>
               <Icon name="send" />
             </button>
           </div>
           {dictation.problem && <span className="banner error" role="alert">{dictation.problem}</span>}
           {voice.problem && <span className="banner error" role="alert">{voice.problem}</span>}
-          <span className="muted small-text">Les actions importantes demandent toujours votre confirmation.</span>
+          <span className="muted small-text">Les actions importantes demandent toujours votre confirmation. Photos, PDF, Word, Excel et archives .zip peuvent être joints.</span>
         </form>
       </main>
+      {camera && (
+        <CameraDialog
+          onClose={() => setCamera(false)}
+          onCapture={(file) => {
+            setCamera(false);
+            attach.add([file]);
+          }}
+        />
+      )}
     </div>
   );
 }

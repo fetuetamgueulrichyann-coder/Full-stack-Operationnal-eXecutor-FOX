@@ -46,24 +46,10 @@ export interface RequestOptions {
   signal?: AbortSignal;
 }
 
-export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const method = options.method ?? "GET";
-  const modifies = method !== "GET";
-  const headers: Record<string, string> = {};
-  if (modifies) {
-    headers["Content-Type"] = "application/json";
-    if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
-  }
-
+async function request<T>(path: string, init: { method: string; headers: Record<string, string>; body?: BodyInit; signal?: AbortSignal }): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, {
-      method,
-      credentials: "include",
-      headers,
-      signal: options.signal,
-      body: modifies ? JSON.stringify(options.body ?? {}) : undefined,
-    });
+    response = await fetch(`${API_BASE}${path}`, { ...init, credentials: "include" });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new NetworkError();
@@ -85,4 +71,27 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 
   if (typeof data.csrf_token === "string") csrfToken = data.csrf_token;
   return data as T;
+}
+
+export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const method = options.method ?? "GET";
+  const modifies = method !== "GET";
+  const headers: Record<string, string> = {};
+  if (modifies) {
+    headers["Content-Type"] = "application/json";
+    if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  }
+  return request<T>(path, {
+    method,
+    headers,
+    signal: options.signal,
+    body: modifies ? JSON.stringify(options.body ?? {}) : undefined,
+  });
+}
+
+/** Envoi d'un fichier (formulaire multipart). Le navigateur fixe lui-même le Content-Type et sa frontière. */
+export async function apiUpload<T>(path: string, form: FormData, signal?: AbortSignal): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+  return request<T>(path, { method: "POST", headers, body: form, signal });
 }

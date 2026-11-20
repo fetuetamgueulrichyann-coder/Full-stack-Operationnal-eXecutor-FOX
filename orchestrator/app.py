@@ -13,6 +13,7 @@ from google.genai import errors
 import accounts
 import agent
 import db
+import files
 import briefing
 import formatting
 import journal
@@ -62,6 +63,7 @@ PURGE_INTERVAL_SECONDS = 3600
 _last_purge = 0.0
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = files.MAX_FILE_BYTES + 1024 * 1024  # un envoi de fichier ; les requêtes JSON sont bien plus petites
 if TRUST_PROXY:
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
@@ -93,7 +95,7 @@ def maybe_purge():
     except Exception:
         log.exception("echec de la purge de l'historique")
         return
-    if result["chats"] or result["private"] or result["tasks"] or result.get("events"):
+    if result["chats"] or result["private"] or result["tasks"] or result.get("events") or result.get("files"):
         log.info(
             "Purge : %s conversation(s), %s contexte(s) privé(s), %s tâche(s) close(s), %s rendez-vous passé(s)",
             result["chats"], result["private"], result["tasks"], result.get("events", 0),
@@ -111,6 +113,8 @@ def require_json_for_post():
     # Un corps JSON déclenche une vérification préalable (preflight) des navigateurs entre
     # origines différentes : un formulaire d'un autre site ne peut pas imiter ces requêtes.
     if request.method in ("POST", "PUT", "PATCH", "DELETE") and not request.is_json:
+        if request.method == "POST" and request.path == "/files" and request.mimetype == "multipart/form-data":
+            return None  # envoi de fichier : l'origine et le jeton CSRF (en-tête personnalisé) sont vérifiés juste après
         return jsonify(error="Content-Type application/json requis"), 415
 
 
@@ -296,12 +300,12 @@ def conversation_context(user_id, data):
     return False, chat_id, None
 
 
-def store_exchange(user_id, private, chat_id, user_message, bot_reply):
+def store_exchange(user_id, private, chat_id, user_message, bot_reply, attachments=None):
     """Enregistre l'échange dans la conversation, ou en mémoire temporaire en mode privé."""
     if private:
         db.save_private_exchange(user_id, user_message, bot_reply)
         return None
-    return db.save_exchange(user_id, user_message, bot_reply, chat_id)
+    return db.save_exchange(user_id, user_message, bot_reply, chat_id, attachments)
 
 
 @app.post("/message")
@@ -312,16 +316,33 @@ def message():
         return error
     user_id, role = user["id"], user["role"]
 
-    text = (data.get("text") or "").strip()
-    if not text:
+    text = (data.get("text") or "").strip() if isinstance(data.get("text"), (str, type(None))) else ""
+    file_ids = data.get("files") or []
+    if not isinstance(file_ids, list) or len(file_ids) > files.MAX_FILES_PER_MESSAGE or not all(isinstance(i, str) for i in file_ids):
+        return jsonify(error=f"files : {files.MAX_FILES_PER_MESSAGE} fichiers au plus"), 400
+    for file_id in file_ids:
+        try:
+            uuid.UUID(file_id)
+        except ValueError:
+            return jsonify(error="identifiant de fichier invalide"), 400
+    if not text and not file_ids:
         return jsonify(error="text est requis"), 400
     if len(text) > MAX_INPUT_CHARS:
         return jsonify(error="message trop long"), 413
+    attached_rows = db.get_files(user_id, file_ids) if file_ids else []
+    if len(attached_rows) != len(set(file_ids)):
+        return jsonify(error="fichier introuvable (il a peut-être expiré)", code="file_not_found"), 404
+    if sum(r["size"] for r in attached_rows) > files.MAX_MESSAGE_BYTES:
+        return jsonify(error="fichiers trop volumineux pour un seul message", code="file_too_big"), 413
+    if not text:
+        text = "Regarde le fichier joint et dis-moi l'essentiel." if len(attached_rows) == 1 else "Regarde les fichiers joints et dis-moi l'essentiel."
 
     maybe_purge()
     private, chat_id, context_error = conversation_context(user_id, data)
     if context_error:
         return context_error
+    is_owner = role == accounts.ROLE_OWNER
+    prepared = files.prepare(attached_rows, can_see=is_owner, budget=files.MAX_MESSAGE_TEXT if is_owner else files.TESTER_MESSAGE_TEXT) if attached_rows else None
 
     if agent.is_undo_request(text):
         reply, pending = agent.propose_undo(user_id)
@@ -335,8 +356,9 @@ def message():
         spoken_token = agent.SPOKEN.set(data.get("voice") is True)
         chat_started = time.monotonic()
         try:
+            extra = {"attachments": prepared} if prepared else {}  # sans fichier, l'appel reste celui d'avant
             reply, tokens, pending = agent.chat(
-                user_id, text, role, chat_id=chat_id, private=private
+                user_id, text, role, chat_id=chat_id, private=private, **extra
             )
         except agent.ProviderQuotaExceeded:
             return jsonify(error="capacite du service atteinte", code="capacity_reached"), 503
@@ -365,7 +387,13 @@ def message():
         )
     elif reply != agent.EMPTY_REPLY:
         reply = formatting.clean_reply(reply) or agent.EMPTY_REPLY
-    chat_id = store_exchange(user_id, private, chat_id, text, reply) if reply != agent.EMPTY_REPLY else chat_id
+    sent = [files.public(r) for r in attached_rows]
+    if reply != agent.EMPTY_REPLY:
+        chat_id = store_exchange(user_id, private, chat_id, text, reply, sent)
+        if private:
+            db.delete_files(user_id, [r["id"] for r in attached_rows])  # mode privé : rien ne reste, fichiers compris
+        elif attached_rows:
+            db.mark_files_attached(user_id, [r["id"] for r in attached_rows])
 
     return jsonify(reply=reply, pending=pending, chat_id=chat_id, private=private)
 
@@ -405,6 +433,74 @@ def confirm_action(action_id):
 @app.post("/actions/<action_id>/cancel")
 def cancel_action(action_id):
     return decide(action_id, False)
+
+
+# --- Fichiers joints ------------------------------------------------------------
+def file_storage_cap(role):
+    return files.OWNER_STORAGE_BYTES if role == accounts.ROLE_OWNER else files.TESTER_STORAGE_BYTES
+
+
+FILE_ERROR_STATUS = {"file_empty": 400, "file_type": 415, "file_corrupt": 400, "file_archive": 400, "file_too_big": 413}
+
+
+@app.post("/files")
+def files_upload():
+    """Reçoit UN fichier (formulaire, champ « file »), le vérifie et le garde pour le prochain message."""
+    user, error = authenticate({"telegram_id": request.form.get("telegram_id")})
+    if error:
+        return error
+    upload = request.files.get("file")
+    if upload is None:
+        return jsonify(error="file est requis"), 400
+    data = upload.read(files.MAX_FILE_BYTES + 1)
+    try:
+        name, kind, mime = files.inspect(upload.filename, data)
+    except files.FileError as exc:
+        return jsonify(error=exc.message, code=exc.code), FILE_ERROR_STATUS.get(exc.code, 400)
+    try:
+        file_id = db.add_file(user["id"], name, mime, kind, data, file_storage_cap(user["role"]))
+    except db.StorageFull:
+        return jsonify(error="Espace de fichiers plein : supprimez d'anciennes conversations avec fichiers.", code="file_storage_full"), 429
+    db.audit(user["id"], "file_uploaded", None, {"name": name, "kind": kind, "size": len(data)})
+    return jsonify(file={"id": file_id, "name": name, "kind": kind, "size": len(data)}), 201
+
+
+@app.get("/files/<file_id>")
+def files_download(file_id):
+    """Un fichier de l'utilisateur : images affichées dans la page, le reste en téléchargement."""
+    user, error = chat_auth()
+    if error:
+        return error
+    try:
+        uuid.UUID(file_id)
+    except ValueError:
+        return jsonify(error="fichier introuvable"), 404
+    row = db.get_file(user["id"], file_id)
+    if row is None:
+        return jsonify(error="fichier introuvable"), 404
+    inline = row["kind"] == "image"
+    response = Response(row["data"], mimetype=row["mime"])
+    safe = row["name"].encode("ascii", "replace").decode().replace('"', "")
+    response.headers["Content-Disposition"] = f'{"inline" if inline else "attachment"}; filename="{safe}"'
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
+
+
+@app.delete("/files/<file_id>")
+def files_remove(file_id):
+    """Retire un fichier envoyé mais pas encore joint à un message (la croix de l'aperçu)."""
+    data = body()
+    user, error = authenticate(data)
+    if error:
+        return error
+    try:
+        uuid.UUID(file_id)
+    except ValueError:
+        return jsonify(error="fichier introuvable"), 404
+    if not db.delete_unsent_file(user["id"], file_id):
+        return jsonify(error="fichier introuvable ou déjà joint à un message"), 404
+    return jsonify(ok=True)
 
 
 # --- Conversations et mode privé -----------------------------------------------
@@ -460,7 +556,7 @@ def chats_messages(chat_id):
     messages = []
     for item in items:
         at = item["created_at"].astimezone(zone).isoformat(timespec="minutes")
-        messages.append({"id": f"{item['id']}u", "role": "user", "text": item["user_message"], "at": at})
+        messages.append({"id": f"{item['id']}u", "role": "user", "text": item["user_message"], "at": at, "files": item.get("attachments") or []})
         messages.append({"id": f"{item['id']}a", "role": "assistant", "text": item["bot_reply"], "at": at})
     return jsonify(chat_id=chat_id, messages=messages)
 

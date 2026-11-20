@@ -5,6 +5,7 @@ export interface Call {
   path: string;
   headers: Record<string, string>;
   body: unknown;
+  form?: FormData;
   credentials: RequestCredentials | undefined;
 }
 
@@ -21,6 +22,7 @@ export function mockApi(routes: Record<string, Handler>) {
       path: url,
       headers: (init?.headers ?? {}) as Record<string, string>,
       body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      form: init?.body instanceof FormData ? init.body : undefined,
       credentials: init?.credentials,
     };
     calls.push(call);

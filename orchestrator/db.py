@@ -1,8 +1,10 @@
 import json
 import os
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 
+import psycopg2
 from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
 
@@ -168,7 +170,7 @@ def load_history(user_id, limit, chat_id=None):
                 return []
         cur.execute(
             """
-            SELECT user_message, bot_reply FROM conversations
+            SELECT user_message, bot_reply, attachments FROM conversations
             WHERE user_id = %s AND chat_id = %s
             ORDER BY created_at DESC, id DESC
             LIMIT %s
@@ -177,10 +179,18 @@ def load_history(user_id, limit, chat_id=None):
         )
         rows = cur.fetchall()
     rows.reverse()
-    return rows
+    return [(_with_attachment_note(u, a), b) for u, b, a in rows]
 
 
-def save_exchange(user_id, user_message, bot_reply, chat_id=None):
+def _with_attachment_note(user_message, attachments):
+    """Le modèle ne revoit pas le contenu des fichiers d'un ancien message : on lui rappelle seulement leurs noms."""
+    names = [a.get("name", "fichier") for a in (attachments or []) if isinstance(a, dict)]
+    if not names:
+        return user_message
+    return f"{user_message}\n[Fichiers joints à ce message : {', '.join(names)}. Leur contenu n'est plus visible : demande à l'utilisateur de le renvoyer si besoin.]"
+
+
+def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=None):
     """Enregistre un échange dans la conversation active (ou celle indiquée, si elle est à lui)."""
     with cursor() as cur:
         if chat_id is None:
@@ -196,10 +206,10 @@ def save_exchange(user_id, user_message, bot_reply, chat_id=None):
             raise LookupError("conversation introuvable")
         cur.execute(
             """
-            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply, attachments)
+            VALUES (%s, %s, %s, %s, %s)
             """,
-            (user_id, chat_id, user_message, bot_reply),
+            (user_id, chat_id, user_message, bot_reply, Json(attachments or [])),
         )
     return chat_id
 
@@ -268,8 +278,8 @@ def chat_messages(user_id, chat_id, limit=200):
             return None
         cur.execute(
             """
-            SELECT id, user_message, bot_reply, created_at FROM (
-                SELECT id, user_message, bot_reply, created_at FROM conversations
+            SELECT id, user_message, bot_reply, created_at, attachments FROM (
+                SELECT id, user_message, bot_reply, created_at, attachments FROM conversations
                 WHERE user_id = %s AND chat_id = %s
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s
@@ -278,7 +288,7 @@ def chat_messages(user_id, chat_id, limit=200):
             (user_id, chat_id, limit),
         )
         return [
-            {"id": r[0], "user_message": r[1], "bot_reply": r[2], "created_at": r[3]}
+            {"id": r[0], "user_message": r[1], "bot_reply": r[2], "created_at": r[3], "attachments": r[4] or []}
             for r in cur.fetchall()
         ]
 
@@ -286,8 +296,16 @@ def chat_messages(user_id, chat_id, limit=200):
 def delete_chat(user_id, chat_id):
     """Supprime définitivement une conversation et ses messages. False si elle n'est pas à lui."""
     with cursor() as cur:
+        cur.execute(
+            "SELECT attachments FROM conversations WHERE chat_id = %s AND user_id = %s AND attachments <> '[]'::jsonb",
+            (chat_id, user_id),
+        )
+        file_ids = [a["id"] for (attached,) in cur.fetchall() for a in attached if isinstance(a, dict) and "id" in a]
         cur.execute("DELETE FROM chats WHERE id = %s AND user_id = %s", (chat_id, user_id))
-        return cur.rowcount == 1
+        deleted = cur.rowcount == 1
+        if deleted and file_ids:
+            cur.execute("DELETE FROM files WHERE user_id = %s AND id::text = ANY(%s)", (user_id, file_ids))
+        return deleted
 
 
 def delete_all_chats(user_id):
@@ -297,6 +315,7 @@ def delete_all_chats(user_id):
         count = cur.rowcount
         cur.execute("DELETE FROM conversations WHERE user_id = %s", (user_id,))
         cur.execute("DELETE FROM private_context WHERE user_id = %s", (user_id,))
+        cur.execute("DELETE FROM files WHERE user_id = %s AND attached", (user_id,))
         return count
 
 
@@ -369,7 +388,98 @@ def purge_history(owner_days=None, tester_days=None):
             (PRIVATE_CONTEXT_MINUTES,),
         )
         private = cur.rowcount
-    return {"chats": deleted, "private": private, "tasks": purge_closed_tasks(), "events": purge_old_events()}
+    return {"chats": deleted, "private": private, "tasks": purge_closed_tasks(), "events": purge_old_events(), "files": purge_files(owner_days, tester_days)}
+
+
+# --- Fichiers joints --------------------------------------------------------------
+UNSENT_FILE_HOURS = 2  # un fichier envoyé mais jamais joint à un message est supprimé après ce délai
+
+
+class StorageFull(Exception):
+    """Le stockage de fichiers de cet utilisateur est plein."""
+
+
+def files_used(user_id):
+    with cursor() as cur:
+        cur.execute("SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = %s", (user_id,))
+        return int(cur.fetchone()[0])
+
+
+def add_file(user_id, name, mime, kind, data, cap_bytes):
+    """Enregistre un fichier envoyé ; StorageFull si le plafond de l'utilisateur serait dépassé. Retourne son identifiant."""
+    file_id = str(uuid.uuid4())
+    with cursor() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (user_id,))  # deux envois en même temps ne dépassent pas le plafond
+        cur.execute("SELECT COALESCE(SUM(size), 0) FROM files WHERE user_id = %s", (user_id,))
+        if int(cur.fetchone()[0]) + len(data) > cap_bytes:
+            raise StorageFull()
+        cur.execute(
+            "INSERT INTO files (id, user_id, name, mime, kind, size, data) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (file_id, user_id, name, mime, kind, len(data), psycopg2.Binary(data)),
+        )
+    return file_id
+
+
+def _file_row(r):
+    return {"id": str(r[0]), "name": r[1], "mime": r[2], "kind": r[3], "size": r[4], "data": bytes(r[5])}
+
+
+def get_files(user_id, ids):
+    """Fichiers de l'utilisateur, dans l'ordre demandé ; un identifiant inconnu ou à un autre est ignoré."""
+    if not ids:
+        return []
+    with cursor() as cur:
+        cur.execute(
+            "SELECT id, name, mime, kind, size, data FROM files WHERE user_id = %s AND id::text = ANY(%s)",
+            (user_id, [str(i) for i in ids]),
+        )
+        found = {str(r[0]): _file_row(r) for r in cur.fetchall()}
+    return [found[str(i)] for i in ids if str(i) in found]
+
+
+def get_file(user_id, file_id):
+    rows = get_files(user_id, [file_id])
+    return rows[0] if rows else None
+
+
+def delete_unsent_file(user_id, file_id):
+    """Retire un fichier pas encore joint à un message. False s'il n'existe pas, n'est pas à lui ou est déjà joint."""
+    with cursor() as cur:
+        cur.execute("DELETE FROM files WHERE user_id = %s AND id::text = %s AND NOT attached", (user_id, str(file_id)))
+        return cur.rowcount == 1
+
+
+def mark_files_attached(user_id, ids):
+    with cursor() as cur:
+        cur.execute("UPDATE files SET attached = true WHERE user_id = %s AND id::text = ANY(%s)", (user_id, [str(i) for i in ids]))
+
+
+def delete_files(user_id, ids):
+    with cursor() as cur:
+        cur.execute("DELETE FROM files WHERE user_id = %s AND id::text = ANY(%s)", (user_id, [str(i) for i in ids]))
+        return cur.rowcount
+
+
+def purge_files(owner_days=None, tester_days=None):
+    """Supprime les fichiers jamais joints (après quelques heures) et les fichiers joints trop anciens (comme l'historique)."""
+    owner_days = RETENTION_DAYS_OWNER if owner_days is None else owner_days
+    tester_days = RETENTION_DAYS_TESTER if tester_days is None else tester_days
+    total = 0
+    with cursor() as cur:
+        cur.execute("DELETE FROM files WHERE NOT attached AND created_at < now() - make_interval(hours => %s)", (UNSENT_FILE_HOURS,))
+        total += cur.rowcount
+        for role_filter, days in (("= 'owner'", owner_days), ("<> 'owner'", tester_days)):
+            if days and days > 0:
+                cur.execute(
+                    f"""
+                    DELETE FROM files f USING users u
+                    WHERE u.id = f.user_id AND u.role {role_filter} AND f.attached
+                      AND f.created_at < now() - make_interval(days => %s)
+                    """,  # noqa: S608 (fragment fixe, jamais issu d'une saisie)
+                    (days,),
+                )
+                total += cur.rowcount
+    return total
 
 
 # --- Tâches ----------------------------------------------------------------

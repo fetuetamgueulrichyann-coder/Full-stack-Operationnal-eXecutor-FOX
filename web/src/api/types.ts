@@ -26,11 +26,20 @@ export interface ChatsResponse {
   private: boolean;
 }
 
+/** Fichier joint à un message : envoyé par POST /files, relu dans l'historique. */
+export interface FileInfo {
+  id: string;
+  name: string;
+  kind: "image" | "pdf" | "word" | "excel" | "text" | "archive";
+  size: number;
+}
+
 export interface HistoryMessage {
   id: string;
   role: "user" | "assistant";
   text: string | null; // une réponse peut manquer (message interrompu)
   at: string;
+  files?: FileInfo[];
 }
 
 export interface PendingAction {

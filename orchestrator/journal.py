@@ -34,6 +34,7 @@ EVENT_LABELS = {
     "push_enabled": "Notifications activées sur un appareil",
     "push_disabled": "Notifications désactivées sur un appareil",
     "voice_settings": "Réglages de voix modifiés",
+    "file_uploaded": "Fichier envoyé",
     "project_created": "Chantier créé",
     "project_updated": "Chantier modifié",
     "project_archived": "Chantier archivé",
