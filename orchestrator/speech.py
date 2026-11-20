@@ -172,51 +172,91 @@ def _cool(model, seconds):
         _cooling[model] = time.monotonic() + seconds
 
 
+def _google_message(exc):
+    """Message d'erreur renvoyé par Google (sans jamais contenir la clé), court."""
+    try:
+        body = exc.read().decode("utf-8", "replace") if exc.fp is not None else ""
+        text = json.loads(body).get("error", {}).get("message", "")
+    except (ValueError, AttributeError, OSError, TypeError):
+        text = ""
+    return re.sub(r"\s+", " ", str(text))[:160]
+
+
+def _audio_of(data):
+    """(son brut, explication) d'une réponse Gemini ; son vide si Google n'a rien renvoyé."""
+    notes = []
+    if not isinstance(data, dict):
+        return b"", "réponse illisible"
+    block = (data.get("promptFeedback") or {}).get("blockReason")
+    if block:
+        notes.append(f"texte refusé : {block}")
+    for cand in data.get("candidates") or []:
+        if not isinstance(cand, dict):
+            continue
+        for part in (cand.get("content") or {}).get("parts") or []:
+            if not isinstance(part, dict):
+                continue
+            inline = part.get("inlineData") or part.get("inline_data") or {}
+            try:
+                audio = base64.b64decode(inline.get("data") or "")
+            except (ValueError, TypeError):
+                audio = b""
+            if audio:
+                return audio, ""
+            if part.get("text"):
+                notes.append("texte reçu : " + re.sub(r"\s+", " ", str(part["text"]))[:80])
+        if cand.get("finishReason"):
+            notes.append(f"fin : {cand['finishReason']}")
+    return b"", ", ".join(notes) or "aucun contenu"
+
+
 def _gemini(spoken, env, opener, voice_override=None):
-    """Son (WAV) de `spoken` par Gemini, avec repli entre modèles."""
+    """Son (WAV) de `spoken` par Gemini : nouvel essai si la réponse est vide, puis modèle suivant."""
     key = env["GEMINI_API_KEY"].strip()
     configured = (env.get("VOICE_MODEL") or "").strip()
     models = (configured,) if configured else DEFAULT_MODELS  # un modèle choisi à la main n'est pas remplacé
     voice = valid_voice(voice_override) or voice_name(env)
-    data = None
-    last_status = None
     busy = 0
+    empties = 0
+    notes = []
     for model in models:
         if _cooling_now(model):
             busy += 1
             continue
         url = ENDPOINT.format(model=model)
-        for style in ("prebuilt", "simple"):  # deux écritures de la voix selon la version de l'API
+        style = "prebuilt"
+        for _attempt in range(3):
             try:
                 data = _post(url, _request_body(spoken, voice, style), key, opener)
-                break
             except urllib.error.HTTPError as exc:
-                last_status = exc.code
-                if exc.code == 400 and style == "prebuilt":
+                if exc.code == 400 and style == "prebuilt":  # autre écriture de la voix
+                    style = "simple"
                     continue
                 if exc.code == 429:  # quota de ce modèle épuisé : pause, puis modèle suivant
                     _cool(model, cooldown_seconds(env))
                     busy += 1
                     break
-                if exc.code in (404, 500, 502, 503, 504):  # modèle absent ou en panne : modèle suivant
-                    break
-                raise SpeechError("upstream_error", f"synthèse refusée ({exc.code})") from exc
-            except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
-                raise SpeechError("upstream_error", "synthèse indisponible") from exc
-        if data is not None:
-            break
-    if data is None:
-        if busy:
-            raise SpeechError("busy", "tous les modèles de voix sont saturés pour le moment")
-        raise SpeechError("upstream_error", f"synthèse refusée ({last_status})")
-    try:
-        part = data["candidates"][0]["content"]["parts"][0]["inlineData"]
-        audio = base64.b64decode(part["data"])
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
-        raise SpeechError("empty_audio", "réponse audio vide") from exc
-    if not audio:
-        raise SpeechError("empty_audio", "réponse audio vide")
-    return audio if audio[:4] == b"RIFF" else wav_from_pcm(audio)
+                notes.append(f"{model} : HTTP {exc.code} {_google_message(exc)}".strip())
+                break  # 400/401/403/404/5xx : modèle suivant
+            except (TimeoutError, ValueError) as exc:
+                notes.append(f"{model} : {type(exc).__name__}")
+                break
+            except (urllib.error.URLError, OSError) as exc:
+                raise SpeechError("upstream_error", f"synthèse indisponible ({type(exc).__name__})") from exc
+            audio, why = _audio_of(data)
+            if audio:
+                return audio if audio[:4] == b"RIFF" else wav_from_pcm(audio)
+            empties += 1
+            notes.append(f"{model} : réponse sans audio ({why})")
+            # une réponse vide arrive parfois par à-coups : un seul nouvel essai avant le modèle suivant
+            if sum(1 for n in notes if n.startswith(model + " : réponse sans audio")) >= 2:
+                break
+    detail = " ; ".join(notes)
+    if busy and not empties:
+        raise SpeechError("busy", "tous les modèles de voix sont saturés pour le moment")
+    if empties:
+        raise SpeechError("empty_audio", f"réponse audio vide — {detail}")
+    raise SpeechError("upstream_error", f"synthèse refusée — {detail}")
 
 
 def _elevenlabs(spoken, env, opener):

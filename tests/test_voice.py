@@ -574,3 +574,103 @@ def test_les_reglages_sont_audites(client, gemini):
 
 def test_reglages_sans_connexion(client, gemini):
     assert client.post("/voice/settings", json={"voice": "Puck"}).status_code == 401
+
+
+# --- réponses vides de Google : nouvel essai, modèle suivant, diagnostic ----------------------
+def empty_reply(finish="OTHER", text=None):
+    parts = [{"text": text}] if text else []
+    return FakeResponse(json.dumps({"candidates": [{"finishReason": finish, "content": {"parts": parts}}]}).encode())
+
+
+def test_reponse_vide_un_nouvel_essai_reussit(monkeypatch, gemini):
+    answers = iter([empty_reply(), reply()])
+    urls = []
+    monkeypatch.setattr(speech.urllib.request, "urlopen", lambda req, timeout=None: (urls.append(req.full_url), next(answers))[1])
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+    assert models_in(urls) == ["gemini-3.1-flash-tts-preview"] * 2
+
+
+def test_reponse_vide_deux_fois_on_passe_au_modele_suivant(monkeypatch, gemini):
+    urls = []
+
+    def fake(req, timeout=None):
+        urls.append(req.full_url)
+        return reply() if "gemini-2.5-flash-preview-tts" in req.full_url else empty_reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+    assert models_in(urls) == ["gemini-3.1-flash-tts-preview"] * 2 + ["gemini-2.5-flash-preview-tts"]
+
+
+def test_tout_est_vide_le_message_dit_pourquoi(monkeypatch, gemini):
+    monkeypatch.setattr(speech.urllib.request, "urlopen", lambda req, timeout=None: empty_reply("OTHER", "Je ne peux pas lire cela"))
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize("Bonjour")
+    assert exc.value.code == "empty_audio"
+    assert "gemini-3.1-flash-tts-preview" in exc.value.message and "fin : OTHER" in exc.value.message
+    assert "Je ne peux pas lire cela" in exc.value.message and "test-key" not in exc.value.message
+
+
+def test_texte_refuse_par_google(monkeypatch, gemini):
+    monkeypatch.setattr(speech.urllib.request, "urlopen", lambda req, timeout=None: FakeResponse(b'{"promptFeedback": {"blockReason": "SAFETY"}}'))
+    monkeypatch.setenv("VOICE_MODEL", "mon-modele")
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize("Bonjour")
+    assert "SAFETY" in exc.value.message
+
+
+def test_ecriture_inline_data_en_serpent_acceptee(monkeypatch, gemini):
+    data = {"candidates": [{"content": {"parts": [{"inline_data": {"data": base64.b64encode(PCM).decode()}}]}}]}
+    monkeypatch.setattr(speech.urllib.request, "urlopen", lambda req, timeout=None: FakeResponse(json.dumps(data).encode()))
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+
+
+def test_message_d_erreur_de_google_sans_la_cle(monkeypatch, gemini):
+    def fake(req, timeout=None):
+        body = io.BytesIO(json.dumps({"error": {"message": "API key not valid. Please pass a valid API key."}}).encode())
+        raise urllib.error.HTTPError(req.full_url, 403, "no", {}, body)
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.setenv("VOICE_MODEL", "mon-modele")
+    with pytest.raises(speech.SpeechError) as exc:
+        speech.synthesize("Bonjour")
+    assert exc.value.code == "upstream_error" and "403" in exc.value.message and "API key not valid" in exc.value.message
+    assert "test-key" not in exc.value.message
+
+
+def test_requete_refusee_400_modele_suivant(monkeypatch, gemini):
+    urls = []
+
+    def fake(req, timeout=None):
+        urls.append(req.full_url)
+        if "gemini-3.1" in req.full_url:
+            raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, None)
+        return reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+    assert models_in(urls)[-1] == "gemini-2.5-flash-preview-tts"
+
+
+def test_delai_depasse_modele_suivant(monkeypatch, gemini):
+    def fake(req, timeout=None):
+        if "gemini-3.1" in req.full_url:
+            raise TimeoutError("lent")
+        return reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+
+
+def test_reponse_non_json_modele_suivant(monkeypatch, gemini):
+    def fake(req, timeout=None):
+        return FakeResponse(b"<html>oups</html>") if "gemini-3.1" in req.full_url else reply()
+
+    monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
+    monkeypatch.delenv("VOICE_MODEL", raising=False)
+    assert speech.synthesize("Bonjour")[:4] == b"RIFF"

@@ -3,6 +3,7 @@ import { api } from "../api/client";
 import { describeError } from "../api/errors";
 import type { BriefingSettings, Business, TimezoneInfo } from "../api/types";
 import { Markdown } from "../components/Markdown";
+import { AppearanceCard } from "../components/AppearanceCard";
 import { NotificationsCard } from "../components/NotificationsCard";
 import { VoiceCard } from "../components/VoiceCard";
 import { useAuth } from "../auth/AuthContext";
@@ -102,12 +103,13 @@ export function Settings() {
     <main className="page wide-page">
       <header className="stack">
         <h1>Réglages</h1>
-        <span className="muted small-text">Fuseau horaire, notifications, briefing du matin, entreprise et compte.</span>
+        <span className="muted small-text">Apparence, fuseau horaire, notifications, voix, briefing du matin, entreprise et compte.</span>
       </header>
       {error && <div className="banner error" role="alert">{error}</div>}
       {notice && <div className="banner info" role="status">{notice}</div>}
 
       <div className="card-grid">
+        <AppearanceCard />
         <section className="card" aria-label="Fuseau horaire">
           <h2>Fuseau horaire</h2>
           <p className="sub">Les rendez-vous, les rappels et le briefing suivent votre fuseau.{zone ? ` Heure actuelle : ${timeOf(zone.now)}.` : ""}</p>

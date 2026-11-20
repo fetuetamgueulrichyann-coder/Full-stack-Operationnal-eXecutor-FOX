@@ -22,6 +22,9 @@ const PATHS = {
   speaker: "M11 5 6 9H3v6h3l5 4zM15.5 9a4 4 0 0 1 0 6M18.5 6a8 8 0 0 1 0 12",
   wave: "M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4",
   stop: "M6 6h12v12H6z",
+  sun: "M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
+  moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
+  contrast: "M12 3v18",
 } as const;
 
 export type IconName = keyof typeof PATHS;
@@ -44,6 +47,8 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
       {name === "lock" && <rect x="5" y="11" width="14" height="9" rx="2" />}
       {name === "eye" && <circle cx="12" cy="12" r="3" />}
       {name === "key" && <circle cx="8" cy="15" r="4" />}
+      {name === "sun" && <circle cx="12" cy="12" r="4" />}
+      {name === "contrast" && <circle cx="12" cy="12" r="9" />}
       {name === "alert" && <circle cx="12" cy="12" r="9" />}
     </svg>
   );
