@@ -12,6 +12,7 @@ from google.genai import errors
 
 import accounts
 import agent
+import creations
 import db
 import files
 import briefing
@@ -300,12 +301,17 @@ def conversation_context(user_id, data):
     return False, chat_id, None
 
 
-def store_exchange(user_id, private, chat_id, user_message, bot_reply, attachments=None):
+def from_web():
+    """La requête vient-elle de l'interface web (cookie) et non du bot Telegram (jeton de service) ?"""
+    return request.headers.get("X-Fox-Service-Token") is None
+
+
+def store_exchange(user_id, private, chat_id, user_message, bot_reply, attachments=None, reply_files=None):
     """Enregistre l'échange dans la conversation, ou en mémoire temporaire en mode privé."""
     if private:
         db.save_private_exchange(user_id, user_message, bot_reply)
         return None
-    return db.save_exchange(user_id, user_message, bot_reply, chat_id, attachments)
+    return db.save_exchange(user_id, user_message, bot_reply, chat_id, attachments, reply_files)
 
 
 @app.post("/message")
@@ -344,6 +350,7 @@ def message():
     is_owner = role == accounts.ROLE_OWNER
     prepared = files.prepare(attached_rows, can_see=is_owner, budget=files.MAX_MESSAGE_TEXT if is_owner else files.TESTER_MESSAGE_TEXT) if attached_rows else None
 
+    made = []
     if agent.is_undo_request(text):
         reply, pending = agent.propose_undo(user_id)
     else:
@@ -354,6 +361,7 @@ def message():
             return jsonify(error="plafond journalier atteint", code="quota_exceeded", scope=exc.scope), 429
 
         spoken_token = agent.SPOKEN.set(data.get("voice") is True)
+        box_token = creations.begin(file_storage_cap(role), web=from_web())
         chat_started = time.monotonic()
         try:
             extra = {"attachments": prepared} if prepared else {}  # sans fichier, l'appel reste celui d'avant
@@ -375,6 +383,8 @@ def message():
             return jsonify(error="service indisponible"), 502
         finally:
             agent.SPOKEN.reset(spoken_token)
+            made = creations.collect()
+            creations.end(box_token)
         if data.get("voice") is True:
             log.info("réponse orale : %d ms de réflexion", int((time.monotonic() - chat_started) * 1000))
 
@@ -389,13 +399,13 @@ def message():
         reply = formatting.clean_reply(reply) or agent.EMPTY_REPLY
     sent = [files.public(r) for r in attached_rows]
     if reply != agent.EMPTY_REPLY:
-        chat_id = store_exchange(user_id, private, chat_id, text, reply, sent)
+        chat_id = store_exchange(user_id, private, chat_id, text, reply, sent, made)
         if private:
             db.delete_files(user_id, [r["id"] for r in attached_rows])  # mode privé : rien ne reste, fichiers compris
         elif attached_rows:
             db.mark_files_attached(user_id, [r["id"] for r in attached_rows])
 
-    return jsonify(reply=reply, pending=pending, chat_id=chat_id, private=private)
+    return jsonify(reply=reply, pending=pending, chat_id=chat_id, private=private, files=made)
 
 
 def decide(action_id, confirm):
@@ -557,7 +567,7 @@ def chats_messages(chat_id):
     for item in items:
         at = item["created_at"].astimezone(zone).isoformat(timespec="minutes")
         messages.append({"id": f"{item['id']}u", "role": "user", "text": item["user_message"], "at": at, "files": item.get("attachments") or []})
-        messages.append({"id": f"{item['id']}a", "role": "assistant", "text": item["bot_reply"], "at": at})
+        messages.append({"id": f"{item['id']}a", "role": "assistant", "text": item["bot_reply"], "at": at, "files": item.get("reply_files") or []})
     return jsonify(chat_id=chat_id, messages=messages)
 
 

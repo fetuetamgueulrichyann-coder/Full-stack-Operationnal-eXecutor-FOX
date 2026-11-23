@@ -309,6 +309,7 @@ class Prepared:
     blobs: int = 0
     chars: int = 0
     budget: int = MAX_MESSAGE_TEXT  # texte lu au maximum pour ce message
+    max_blobs: int = MAX_BLOBS
 
     def add_text(self, label, text):
         room = self.budget - self.chars
@@ -322,8 +323,8 @@ class Prepared:
     def add_blob(self, label, data, mime, can_see):
         if not can_see:
             self.notes.append(f"« {label} » : ce compte ne permet pas à FOX de voir les images ni les PDF scannés.")
-        elif self.blobs >= MAX_BLOBS:
-            self.notes.append(f"« {label} » n'a pas été regardé (plus de {MAX_BLOBS} images ou PDF dans ce message).")
+        elif self.blobs >= self.max_blobs:
+            self.notes.append(f"« {label} » n'a pas été regardé (plus de {self.max_blobs} images ou PDF dans ce message).")
         else:
             self.blobs += 1
             self.items.append(("text", f"[Fichier joint : {label}]"))
@@ -353,10 +354,10 @@ def render_text(items, notes):
     return "\n\n" + block
 
 
-def prepare(rows, can_see, budget=MAX_MESSAGE_TEXT):
+def prepare(rows, can_see, budget=MAX_MESSAGE_TEXT, max_blobs=MAX_BLOBS):
     """rows : [{name, kind, mime, data}]. can_see : le modèle de cet utilisateur voit-il les images et PDF ?
     budget : nombre de caractères de texte lus au plus (réduit pour les modèles au quota serré)."""
-    prepared = Prepared(budget=budget)
+    prepared = Prepared(budget=budget, max_blobs=max_blobs)
     for row in rows:
         _prepare_one(prepared, row["name"], row["kind"], row["mime"], row["data"], can_see)
         prepared.names.append(row["name"])

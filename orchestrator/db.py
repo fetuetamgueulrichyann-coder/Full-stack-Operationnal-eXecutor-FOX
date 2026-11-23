@@ -161,8 +161,10 @@ def current_chat_id(user_id):
         return _latest_chat(cur, user_id)
 
 
-def load_history(user_id, limit, chat_id=None):
-    """Derniers échanges d'une conversation (par défaut la conversation active)."""
+def load_history(user_id, limit, chat_id=None, with_files=False):
+    """Derniers échanges d'une conversation (par défaut la conversation active).
+
+    with_files : renvoie des triplets (message brut, réponse, fichiers joints) au lieu de paires."""
     with cursor() as cur:
         if chat_id is None:
             chat_id = _latest_chat(cur, user_id)
@@ -179,6 +181,8 @@ def load_history(user_id, limit, chat_id=None):
         )
         rows = cur.fetchall()
     rows.reverse()
+    if with_files:
+        return [(u, b, a or []) for u, b, a in rows]
     return [(_with_attachment_note(u, a), b) for u, b, a in rows]
 
 
@@ -190,7 +194,7 @@ def _with_attachment_note(user_message, attachments):
     return f"{user_message}\n[Fichiers joints à ce message : {', '.join(names)}. Leur contenu n'est plus visible : demande à l'utilisateur de le renvoyer si besoin.]"
 
 
-def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=None):
+def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=None, reply_files=None):
     """Enregistre un échange dans la conversation active (ou celle indiquée, si elle est à lui)."""
     with cursor() as cur:
         if chat_id is None:
@@ -206,11 +210,16 @@ def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=No
             raise LookupError("conversation introuvable")
         cur.execute(
             """
-            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply, attachments)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply, attachments, reply_files)
+            VALUES (%s, %s, %s, %s, %s, %s)
             """,
-            (user_id, chat_id, user_message, bot_reply, Json(attachments or [])),
+            (user_id, chat_id, user_message, bot_reply, Json(attachments or []), Json(reply_files or [])),
         )
+        if reply_files:  # un fichier créé et montré dans la conversation en fait partie (suppression avec elle)
+            cur.execute(
+                "UPDATE files SET attached = true WHERE user_id = %s AND id::text = ANY(%s)",
+                (user_id, [f["id"] for f in reply_files if isinstance(f, dict) and "id" in f]),
+            )
     return chat_id
 
 
@@ -278,8 +287,8 @@ def chat_messages(user_id, chat_id, limit=200):
             return None
         cur.execute(
             """
-            SELECT id, user_message, bot_reply, created_at, attachments FROM (
-                SELECT id, user_message, bot_reply, created_at, attachments FROM conversations
+            SELECT id, user_message, bot_reply, created_at, attachments, reply_files FROM (
+                SELECT id, user_message, bot_reply, created_at, attachments, reply_files FROM conversations
                 WHERE user_id = %s AND chat_id = %s
                 ORDER BY created_at DESC, id DESC
                 LIMIT %s
@@ -288,7 +297,7 @@ def chat_messages(user_id, chat_id, limit=200):
             (user_id, chat_id, limit),
         )
         return [
-            {"id": r[0], "user_message": r[1], "bot_reply": r[2], "created_at": r[3], "attachments": r[4] or []}
+            {"id": r[0], "user_message": r[1], "bot_reply": r[2], "created_at": r[3], "attachments": r[4] or [], "reply_files": r[5] or []}
             for r in cur.fetchall()
         ]
 
@@ -297,10 +306,13 @@ def delete_chat(user_id, chat_id):
     """Supprime définitivement une conversation et ses messages. False si elle n'est pas à lui."""
     with cursor() as cur:
         cur.execute(
-            "SELECT attachments FROM conversations WHERE chat_id = %s AND user_id = %s AND attachments <> '[]'::jsonb",
+            "SELECT attachments, reply_files FROM conversations WHERE chat_id = %s AND user_id = %s "
+            "AND (attachments <> '[]'::jsonb OR reply_files <> '[]'::jsonb)",
             (chat_id, user_id),
         )
-        file_ids = [a["id"] for (attached,) in cur.fetchall() for a in attached if isinstance(a, dict) and "id" in a]
+        file_ids = [
+            a["id"] for rows in cur.fetchall() for attached in rows for a in (attached or []) if isinstance(a, dict) and "id" in a
+        ]
         cur.execute("DELETE FROM chats WHERE id = %s AND user_id = %s", (chat_id, user_id))
         deleted = cur.rowcount == 1
         if deleted and file_ids:
@@ -435,6 +447,13 @@ def get_files(user_id, ids):
         )
         found = {str(r[0]): _file_row(r) for r in cur.fetchall()}
     return [found[str(i)] for i in ids if str(i) in found]
+
+
+def list_user_files(user_id, limit=200):
+    """Fichiers de l'utilisateur (sans contenu), le plus récent d'abord."""
+    with cursor() as cur:
+        cur.execute("SELECT id, name, kind, size FROM files WHERE user_id = %s ORDER BY created_at DESC LIMIT %s", (user_id, limit))
+        return [{"id": str(r[0]), "name": r[1], "kind": r[2], "size": r[3]} for r in cur.fetchall()]
 
 
 def get_file(user_id, file_id):

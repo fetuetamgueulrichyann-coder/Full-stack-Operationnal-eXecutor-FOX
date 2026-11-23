@@ -1,6 +1,6 @@
 // Service worker de FOX : garde la coquille de l'application pour un démarrage rapide.
 // Il ne touche JAMAIS à /api (données privées, cookies de session) : tout ce qui est personnel reste en direct.
-const CACHE = "fox-shell-v3";
+const CACHE = "fox-shell-v4";
 const SHELL = ["/", "/favicon.png", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

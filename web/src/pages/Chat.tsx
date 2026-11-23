@@ -291,6 +291,7 @@ export function Chat() {
           id: bubbleId,
           role: "assistant",
           text: data.reply,
+          files: data.files?.length ? data.files.map(toBubbleFile) : undefined,
           actions: data.pending.map((p) => ({ ...p, state: "open" as const })),
         },
       ]);
@@ -475,6 +476,7 @@ export function Chat() {
                 <img src={logo} alt="FOX" width={32} />
                 <div className="assistant-body">
                   <div className="bubble-text"><Markdown text={bubble.text} /></div>
+                  {bubble.files && <BubbleFiles files={bubble.files} />}
                   {voiceEnabled && bubble.text && (
                     <button
                       type="button"

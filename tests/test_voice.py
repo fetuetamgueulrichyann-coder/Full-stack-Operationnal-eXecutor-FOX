@@ -674,3 +674,33 @@ def test_reponse_non_json_modele_suivant(monkeypatch, gemini):
     monkeypatch.setattr(speech.urllib.request, "urlopen", fake)
     monkeypatch.delenv("VOICE_MODEL", raising=False)
     assert speech.synthesize("Bonjour")[:4] == b"RIFF"
+
+
+# --- Dates, heures et montants dits à voix haute ---------------------------------------------------------------
+@pytest.mark.parametrize("written, spoken", [
+    ("Le 21/11/2026 08:00-09:00", "Le 21 novembre 2026 de 8 h à 9 h"),
+    ("rendez-vous le 21-11-2026", "rendez-vous le 21 novembre 2026"),
+    ("le 21.11.2026", "le 21 novembre 2026"),
+    ("le 1/12/2026", "le 1er décembre 2026"),
+    ("le 05/03/26", "le 5 mars 2026"),
+    ("le 2026-11-21", "le 21 novembre 2026"),
+    ("2026-11-21T08:30:00+01:00", "21 novembre 2026 à 8 h 30"),
+    ("le 21/11 à 14:05", "le 21 novembre à 14 h 05"),
+    ("à 08:00", "à 8 h"),
+    ("à 00:00", "à minuit"),
+    ("à 08h30", "à 8 h 30"),
+    ("de 9h à 10h", "de 9 h à 10 h"),
+    ("150 000 FCFA", "150 000 francs CFA"),
+    ("1500 XAF", "1500 francs CFA"),
+    ("45 €", "45 euros"),
+    ("TVA 19,25%", "TVA 19,25 pour cent"),
+    ("M. Dupont et Mme Ngo", "monsieur Dupont et madame Ngo"),
+    ("facture N° 12", "facture numéro 12"),
+])
+def test_dates_heures_montants_dits_comme_a_l_oral(written, spoken):
+    assert speech.clean_for_speech(written) == spoken
+
+
+@pytest.mark.parametrize("text", ["3/4 des travaux", "le 31/02/2026", "version 2026-001", "ratio 1/2", "32/13/2026", "à 25:99"])
+def test_ce_qui_n_est_pas_une_date_reste_intact(text):
+    assert speech.clean_for_speech(text) == text

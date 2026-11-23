@@ -251,3 +251,42 @@ describe("Discussion : appareil photo", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
+
+describe("Discussion : fichiers créés par FOX", () => {
+  const MADE = [
+    { id: "33333333-3333-4333-8333-333333333333", name: "Rapport.pdf", kind: "pdf", size: 2400 },
+    { id: "44444444-4444-4444-8444-444444444444", name: "Budget.xlsx", kind: "excel", size: 6100 },
+  ];
+
+  it("affiche une carte de téléchargement sous la réponse", async () => {
+    open({ "POST /message": () => ({ body: { ...REPLY, reply: "Voilà le rapport.", files: MADE } }) });
+    await userEvent.type(await screen.findByRole("textbox"), "Fais-moi un PDF");
+    await userEvent.click(screen.getByRole("button", { name: "Envoyer" }));
+    await screen.findByText("Voilà le rapport.");
+    const pdfLink = screen.getByRole("link", { name: /Rapport\.pdf/ });
+    expect(pdfLink).toHaveAttribute("href", "/api/files/33333333-3333-4333-8333-333333333333");
+    expect(pdfLink).toHaveAttribute("download", "Rapport.pdf");
+    expect(screen.getByRole("link", { name: /Budget\.xlsx/ })).toBeInTheDocument();
+  });
+
+  it("sans fichier créé, aucune carte", async () => {
+    open();
+    await userEvent.type(await screen.findByRole("textbox"), "Bonjour");
+    await userEvent.click(screen.getByRole("button", { name: "Envoyer" }));
+    await screen.findByText("Voici ce que je vois.");
+    expect(screen.queryByRole("link", { name: /\.pdf/ })).not.toBeInTheDocument();
+  });
+
+  it("les retrouve dans l'historique de la conversation", async () => {
+    open({
+      "GET /chats": () => ({ body: { chats: [{ id: 1, title: "Rapport", updated_at: "2026-11-21T09:00:00+01:00" }], current: 1, private: false } }),
+      "GET /chats/1/messages": () => ({
+        body: { chat_id: 1, messages: [
+          { id: "1u", role: "user", text: "Un PDF", at: "2026-11-21T09:00", files: [] },
+          { id: "1a", role: "assistant", text: "Voilà.", at: "2026-11-21T09:00", files: [MADE[0]] },
+        ] },
+      }),
+    });
+    expect(await screen.findByRole("link", { name: /Rapport\.pdf/ })).toHaveAttribute("download", "Rapport.pdf");
+  });
+});

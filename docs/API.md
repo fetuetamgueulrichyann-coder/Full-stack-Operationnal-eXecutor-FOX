@@ -110,7 +110,7 @@ Légende : 🔒 session (cookie) requise ; ✍️ requête modifiante (jeton CSR
 
 | Route | Corps / paramètres | Réponse |
 |---|---|---|
-| `POST /message` 🔒✍️ | `text` (obligatoire sauf si des fichiers sont joints, 4 000 caractères au plus) ; `files` (facultatif : 4 identifiants de fichiers envoyés par `POST /files`) ; `chat_id` (facultatif) ; `voice: true` (facultatif : conversation orale, FOX répond court, fait pour être lu à voix haute) | `{reply, pending, chat_id, private}`. `pending` est une liste d'actions à confirmer : `[{id, summary}]`. Erreurs : 400, 404 `file_not_found`, 413, 429 `quota_exceeded`, 502, 503. |
+| `POST /message` 🔒✍️ | `text` (obligatoire sauf si des fichiers sont joints, 4 000 caractères au plus) ; `files` (facultatif : 4 identifiants de fichiers envoyés par `POST /files`) ; `chat_id` (facultatif) ; `voice: true` (facultatif : conversation orale, FOX répond court, fait pour être lu à voix haute) | `{reply, pending, chat_id, private, files}`. `pending` est une liste d'actions à confirmer : `[{id, summary}]`. `files` : fichiers créés par FOX pour cette réponse (PDF, Word, Excel, zip), `[{id, name, kind, size}]`, à télécharger avec `GET /files/<id>` (vide si aucun ; jamais créés pour le bot Telegram, qui reçoit une erreur claire côté outil). Erreurs : 400, 404 `file_not_found`, 413, 429 `quota_exceeded`, 502, 503. |
 | `POST /actions/<id>/confirm` 🔒✍️ | `{}` | `{reply}` : résultat de l'action confirmée. |
 | `POST /actions/<id>/cancel` 🔒✍️ | `{}` | `{reply}`. |
 | `GET /chats` 🔒 | | `{chats: [{id, title, created_at, updated_at, messages}], current, private}`. `current` : conversation active non vide ou `null`. |

@@ -5,6 +5,7 @@ fixe l'ordre : si un moteur est saturé ou en panne, le suivant prend le relais.
 d'abord nettoyé (pas de symboles Markdown lus à voix haute) et borné.
 """
 import base64
+import calendar
 import io
 import json
 import os
@@ -99,11 +100,92 @@ _BULLET = re.compile(r"^\s*(?:[-+•]|\d+[.)])\s+", re.M)
 _SPACES = re.compile(r"[ \t  ]+")
 
 
+# --- Dates, heures et montants : écrits pour l'œil, dits pour l'oreille ----------------------------------
+MONTHS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"]
+_ISO_DATE = re.compile(r"(?<![\d/.-])(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?(?![\d-])")
+_FULL_DATE = re.compile(r"(?<![\d/.-])(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})(?![\d/])")
+_SHORT_DATE = re.compile(r"(?<![\d/.:-])(\d{2})/(0[1-9]|1[0-2])(?![\d/:])")
+_TIME_RANGE = re.compile(r"(?<!\d)(\d{1,2})(?::|\s?h\s?)(\d{2})\s*[-–—]\s*(\d{1,2})(?::|\s?h\s?)(\d{2})(?!\d)")
+_TIME = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?::\d{2})?(?![\d:])")
+_TIME_H = re.compile(r"(?<!\d)0?(\d{1,2})\s?h\s?(\d{2})?(?!\w)")
+_CFA = re.compile(r"\s*(?:F\s?CFA|FCFA|XAF|XOF)\b", re.I)
+
+
+def _say_date(day, month, year=None):
+    day, month = int(day), int(month)
+    if not (1 <= month <= 12 and 1 <= day <= calendar.monthrange(2024, month)[1]):  # 29 février accepté (année inconnue)
+        return None
+    text = ("1er" if day == 1 else str(day)) + " " + MONTHS[month - 1]
+    if year is not None:
+        year = int(year)
+        text += " " + str(year if year >= 100 else 2000 + year)
+    return text
+
+
+def _say_time(hour, minute):
+    hour, minute = int(hour), int(minute)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    if hour == 0 and minute == 0:
+        return "minuit"
+    return f"{hour} h" + (f" {minute:02d}" if minute else "")
+
+
+def _sub_date(match):
+    spoken = _say_date(match.group(3), match.group(2), match.group(1))
+    if spoken is None:
+        return match.group(0)
+    if match.group(4) is not None:
+        when = _say_time(match.group(4), match.group(5))
+        if when:
+            spoken += " à " + when
+    return spoken
+
+
+def _sub_full_date(match):
+    return _say_date(match.group(1), match.group(3), match.group(4)) or match.group(0)
+
+
+def _sub_range(match):
+    start, end = _say_time(match.group(1), match.group(2)), _say_time(match.group(3), match.group(4))
+    return f"de {start} à {end}" if start and end else match.group(0)
+
+
+def _sub_time(match):
+    return _say_time(match.group(1), match.group(2)) or match.group(0)
+
+
+def _sub_time_h(match):
+    hour, minute = match.group(1), match.group(2)
+    if int(hour) > 24 or (minute and int(minute) > 59):
+        return match.group(0)
+    return f"{int(hour)} h" + (f" {minute}" if minute else "")
+
+
+def speak_numbers(text):
+    """Réécrit dates, heures et montants comme on les dit : « 21/11/2026 08:00-09:00 » → « 21 novembre 2026 de 8 h à 9 h »."""
+    out = _ISO_DATE.sub(_sub_date, text)
+    out = _FULL_DATE.sub(_sub_full_date, out)
+    out = _SHORT_DATE.sub(lambda m: _say_date(m.group(1), m.group(2)) or m.group(0), out)
+    out = _TIME_RANGE.sub(_sub_range, out)
+    out = _TIME.sub(_sub_time, out)
+    out = _TIME_H.sub(_sub_time_h, out)
+    out = _CFA.sub(" francs CFA", out)
+    out = re.sub(r"\s*€", " euros", out)
+    out = re.sub(r"\s*%", " pour cent", out)
+    out = re.sub(r"\s*°C\b", " degrés", out)
+    out = re.sub(r"\bN°\s*", "numéro ", out)
+    out = re.sub(r"\bMme\b\.?", "madame", out)
+    out = re.sub(r"\bM\.(?=\s+[A-ZÉÈ])", "monsieur", out)
+    return out
+
+
 def clean_for_speech(text, limit=MAX_SPEECH_CHARS):
     """Texte lisible à voix haute : sans Markdown, sans code, sans adresses, borné à `limit` caractères."""
     out = _CODE_BLOCK.sub(" ", text or "")
     out = _LINK.sub(r"\1", out)
     out = _URL.sub(" ", out)
+    out = speak_numbers(out)
     out = _BULLET.sub("", out)
     out = _MARKS.sub("", out)
     out = _SPACES.sub(" ", out)

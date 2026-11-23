@@ -52,6 +52,7 @@ export interface MessageResponse {
   pending: PendingAction[];
   chat_id: number | null;
   private: boolean;
+  files?: FileInfo[]; // fichiers créés par FOX pour cette réponse (PDF, Word, Excel, zip)
 }
 
 export interface EventTask {
