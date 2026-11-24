@@ -14,6 +14,7 @@ from google.genai import errors, types
 import db
 import files
 import memory
+import privacy
 import agenda_tools  # noqa: F401  (enregistre les outils de l'agenda interne)
 import creations  # noqa: F401  (enregistre les outils de création de fichiers)
 import commercial_tools  # noqa: F401  (enregistre les outils des clients et des devis)
@@ -195,12 +196,16 @@ def generate_with_retry(contents, config, model, can_switch):
     l'historique contient des éléments propres au modèle qui l'a produit.
     """
     try:
-        return _call_with_retry(model, contents, config), model
+        result = _call_with_retry(model, contents, config), model
+        privacy.note_engine("gemini")
+        return result
     except LLMUnavailable:
         if not can_switch or model != GEMINI_MODEL or not GEMINI_FALLBACK_MODEL:
             raise
         log.warning("Modèle principal indisponible, bascule vers %s", GEMINI_FALLBACK_MODEL)
-        return _call_with_retry(GEMINI_FALLBACK_MODEL, contents, config), GEMINI_FALLBACK_MODEL
+        result = _call_with_retry(GEMINI_FALLBACK_MODEL, contents, config), GEMINI_FALLBACK_MODEL
+        privacy.note_engine("gemini")
+        return result
 
 
 # --- Annulation d'une action déjà exécutée -----------------------------------
@@ -227,6 +232,7 @@ def run_undo(target_id):
 register(
     Tool(
         name=UNDO_TOOL,
+        category="systeme",
         description="Annule la dernière action exécutée.",
         parameters=None,
         classification=IRREVERSIBLE,
@@ -290,6 +296,7 @@ def groq_post(messages, temperature=0.7, tools=None):
         status = getattr(getattr(exc, "response", None), "status_code", None)
         log.error("Secours Groq en échec (%s, statut=%s)", type(exc).__name__, status)
         raise LLMUnavailable("Groq indisponible") from exc
+    privacy.note_engine("groq")
     tokens = (data.get("usage") or {}).get("total_tokens") or 0
     if tokens:
         db.add_provider_tokens("groq", tokens)

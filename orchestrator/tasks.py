@@ -269,6 +269,7 @@ def done_modifier(result):
 def register_task_tools():
     register(Tool(
         name="lister_taches",
+        category="personnel",
         description="Liste les tâches de l'utilisateur (par défaut les tâches ouvertes, en retard d'abord).",
         parameters={"type": "OBJECT", "properties": {
             "statut": {"type": "STRING", "description": "ouvertes (par défaut), a_faire, en_cours, terminee ou annulee"},
@@ -277,6 +278,7 @@ def register_task_tools():
     ))
     register(Tool(
         name="creer_tache",
+        category="personnel",
         description="Crée une tâche à suivre jusqu'à sa résolution (à utiliser pour toute chose à faire à retenir).",
         parameters={"type": "OBJECT", "properties": {
             "titre": {"type": "STRING", "description": "Ce qu'il faut faire, court et précis"},
@@ -289,6 +291,7 @@ def register_task_tools():
     ))
     register(Tool(
         name="modifier_tache",
+        category="personnel",
         description=(
             "Modifie une tâche, la termine (statut terminee) ou l'annule (statut annulee). "
             "Retrouver d'abord son numéro avec lister_taches."

@@ -173,6 +173,7 @@ def done_archivage(result):
 def register_commercial_tools():
     register(Tool(
         name="lister_clients",
+        category="metier",
         description="Liste les clients enregistrés de l'utilisateur, avec un filtre facultatif sur le nom.",
         parameters={"type": "OBJECT", "properties": {
             "recherche": {"type": "STRING", "description": "Partie du nom à chercher (facultatif)"},
@@ -181,6 +182,7 @@ def register_commercial_tools():
     ))
     register(Tool(
         name="creer_client",
+        category="metier",
         description="Enregistre un nouveau client (nom, et si connus : téléphone, e-mail, adresse).",
         parameters={"type": "OBJECT", "properties": {
             "nom": {"type": "STRING", "description": "Nom du client ou de l'entreprise"},
@@ -193,6 +195,7 @@ def register_commercial_tools():
     ))
     register(Tool(
         name="lister_devis",
+        category="metier",
         description="Liste les devis récents de l'utilisateur (numéro, client, statut, total TTC).",
         parameters={"type": "OBJECT", "properties": {
             "statut": {"type": "STRING", "description": "brouillon, envoyé, accepté ou refusé (facultatif)"},
@@ -202,6 +205,7 @@ def register_commercial_tools():
     ))
     register(Tool(
         name="creer_devis",
+        category="metier",
         description=(
             "Crée un devis pour un client à partir de ses lignes. N'additionne rien toi-même : FOX calcule les "
             "totaux et la TVA. Utilise cet outil, et non une tâche, dès qu'on demande un devis."
@@ -216,6 +220,7 @@ def register_commercial_tools():
     ))
     register(Tool(
         name="changer_statut_devis",
+        category="metier",
         description="Change le statut d'un devis (brouillon, envoyé, accepté, refusé). Retrouver d'abord son numéro avec lister_devis.",
         parameters={"type": "OBJECT", "properties": {
             "devis": {"type": "STRING", "description": "Numéro du devis, par exemple DV-2026-003"},
@@ -225,6 +230,7 @@ def register_commercial_tools():
     ))
     register(Tool(
         name="archiver_devis",
+        category="metier",
         description=(
             "Archive un devis terminé (il est conservé, avec son statut, mais n'apparaît plus dans la liste courante) "
             "ou le désarchive. Un devis ne se supprime pas : on l'archive."

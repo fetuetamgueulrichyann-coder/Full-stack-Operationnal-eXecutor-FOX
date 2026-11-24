@@ -113,7 +113,7 @@ def test_annulation_de_la_creation(agent, db, make_user, tomorrow):
 
 def test_outil_reserve_au_proprietaire_refuse_a_un_testeur(agent, tools, make_user):
     ran = []
-    tools.register(tools.Tool(name="t_proprio_seul", description="x", parameters=None, classification=tools.READ,
+    tools.register(tools.Tool(category="systeme", name="t_proprio_seul", description="x", parameters=None, classification=tools.READ,
                               run=lambda: ran.append(1), roles=("owner",)))
     try:
         user = make_user()
@@ -126,7 +126,7 @@ def test_outil_reserve_au_proprietaire_refuse_a_un_testeur(agent, tools, make_us
 def test_le_prompt_ne_parle_de_google_qu_au_proprietaire(agent, tools):
     saved = dict(tools.REGISTRY)
     try:
-        tools.register(tools.Tool(name="lire_agenda", description="g", parameters=None, classification=tools.READ,
+        tools.register(tools.Tool(category="systeme", name="lire_agenda", description="g", parameters=None, classification=tools.READ,
                                   run=lambda: [], roles=("owner",)))
         assert "agenda Google" in agent.system_prompt(role="owner")
         assert "agenda Google" not in agent.system_prompt(role="tester")

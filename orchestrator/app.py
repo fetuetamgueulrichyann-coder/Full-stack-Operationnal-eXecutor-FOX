@@ -20,6 +20,8 @@ import formatting
 import journal
 import mail
 import memory
+import privacy
+import privacy_store
 import agenda
 import commercial
 import finance
@@ -93,6 +95,7 @@ def maybe_purge():
     _last_purge = now
     try:
         result = db.purge_history()
+        privacy_store.purge_expired()
     except Exception:
         log.exception("echec de la purge de l'historique")
         return
@@ -306,12 +309,15 @@ def from_web():
     return request.headers.get("X-Fox-Service-Token") is None
 
 
-def store_exchange(user_id, private, chat_id, user_message, bot_reply, attachments=None, reply_files=None):
-    """Enregistre l'échange dans la conversation, ou en mémoire temporaire en mode privé."""
+def store_exchange(user_id, private, chat_id, user_message, bot_reply, attachments=None, reply_files=None, data_classes=None, engine=None):
+    """Enregistre l'échange dans la conversation, ou en mémoire temporaire en mode privé.
+
+    data_classes / engine : catégories de données réellement utilisées et moteur qui a répondu, calculés par
+    le serveur (privacy.collect) ; None = inconnu, traité comme sensible."""
     if private:
         db.save_private_exchange(user_id, user_message, bot_reply)
         return None
-    return db.save_exchange(user_id, user_message, bot_reply, chat_id, attachments, reply_files)
+    return db.save_exchange(user_id, user_message, bot_reply, chat_id, attachments, reply_files, data_classes, engine)
 
 
 @app.post("/message")
@@ -351,6 +357,7 @@ def message():
     prepared = files.prepare(attached_rows, can_see=is_owner, budget=files.MAX_MESSAGE_TEXT if is_owner else files.TESTER_MESSAGE_TEXT) if attached_rows else None
 
     made = []
+    classes, engine = None, None  # étiquette inconnue tant qu'elle n'a pas été calculée (sensible par prudence)
     if agent.is_undo_request(text):
         reply, pending = agent.propose_undo(user_id)
     else:
@@ -362,6 +369,9 @@ def message():
 
         spoken_token = agent.SPOKEN.set(data.get("voice") is True)
         box_token = creations.begin(file_storage_cap(role), web=from_web())
+        privacy_tokens = privacy.begin()
+        if attached_rows:
+            privacy.mark(privacy.FICHIER)  # le contenu des fichiers joints entre dans le contexte du modèle
         chat_started = time.monotonic()
         try:
             extra = {"attachments": prepared} if prepared else {}  # sans fichier, l'appel reste celui d'avant
@@ -385,6 +395,8 @@ def message():
             agent.SPOKEN.reset(spoken_token)
             made = creations.collect()
             creations.end(box_token)
+            classes, engine = privacy.collect()
+            privacy.end(privacy_tokens)
         if data.get("voice") is True:
             log.info("réponse orale : %d ms de réflexion", int((time.monotonic() - chat_started) * 1000))
 
@@ -399,7 +411,7 @@ def message():
         reply = formatting.clean_reply(reply) or agent.EMPTY_REPLY
     sent = [files.public(r) for r in attached_rows]
     if reply != agent.EMPTY_REPLY:
-        chat_id = store_exchange(user_id, private, chat_id, text, reply, sent, made)
+        chat_id = store_exchange(user_id, private, chat_id, text, reply, sent, made, classes, engine)
         if private:
             db.delete_files(user_id, [r["id"] for r in attached_rows])  # mode privé : rien ne reste, fichiers compris
         elif attached_rows:
@@ -419,10 +431,15 @@ def decide(action_id, confirm):
     except ValueError:
         return jsonify(error="identifiant d'action invalide"), 400
 
-    result = agent.resolve_action(user["id"], action_id, confirm, user["role"])
+    privacy_tokens = privacy.begin()
+    try:
+        result = agent.resolve_action(user["id"], action_id, confirm, user["role"])
+    finally:
+        classes, engine = privacy.collect()
+        privacy.end(privacy_tokens)
     label = "Confirmation de l'action proposée" if confirm else "Annulation de l'action proposée"
     private = db.private_active(user["id"])
-    store_exchange(user["id"], private, None, label, result)
+    store_exchange(user["id"], private, None, label, result, data_classes=classes, engine=engine)
     return jsonify(reply=result)
 
 

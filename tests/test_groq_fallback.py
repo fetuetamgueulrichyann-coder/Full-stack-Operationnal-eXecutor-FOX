@@ -124,6 +124,7 @@ def test_reponse_groq_mal_formee_est_une_erreur_controlee(agent, setup):
 def test_pas_de_groq_apres_un_appel_d_outil(agent, db, tools, helpers, setup, monkeypatch):
     """Après un outil, l'historique appartient à Gemini : pas de bascule (l'agenda reste sur Gemini)."""
     outil = tools.Tool(
+        category="systeme",
         name="outil_lecture_test",
         description="test",
         parameters=None,

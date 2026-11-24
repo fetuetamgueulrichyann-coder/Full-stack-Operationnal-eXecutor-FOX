@@ -221,11 +221,13 @@ services:
       ORCHESTRATOR_DIR: /srv
       BOT_DIR: /bot
       DB_DIR: /db
+      SCRIPTS_DIR: /scripts
     volumes:
       - ./orchestrator:/srv
       - ./telegram_bot:/bot:ro
       - ./tests:/tests:ro
       - ./db:/db:ro
+      - ./scripts:/scripts:ro
     command: sh -c "pip install -q -r /srv/requirements-dev.txt && python -m pytest -q /tests"
     depends_on:
       db:

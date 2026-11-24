@@ -174,6 +174,7 @@ def done_ecriture(result):
 def register_finance_tools():
     register(Tool(
         name="lister_chantiers",
+        category="metier",
         description="Liste les chantiers de l'utilisateur avec leur budget, leurs recettes, leurs dépenses et leur marge.",
         parameters={"type": "OBJECT", "properties": {
             "statut": {"type": "STRING", "description": "en cours, suspendu ou terminé (facultatif)"},
@@ -183,6 +184,7 @@ def register_finance_tools():
     ))
     register(Tool(
         name="creer_chantier",
+        category="metier",
         description="Crée un chantier (projet) : nom, et si connus client, devis lié, budget, dates.",
         parameters={"type": "OBJECT", "properties": {
             "nom": {"type": "STRING", "description": "Nom du chantier"},
@@ -198,6 +200,7 @@ def register_finance_tools():
     ))
     register(Tool(
         name="modifier_chantier",
+        category="metier",
         description=(
             "Change le statut (en cours, suspendu, terminé), le budget ou la date de fin d'un chantier, ou l'archive. "
             "Un chantier ne se supprime pas : on l'archive."
@@ -214,6 +217,7 @@ def register_finance_tools():
     ))
     register(Tool(
         name="enregistrer_ecriture",
+        category="metier",
         description=(
             "Enregistre une recette (argent reçu : paiement, acompte) ou une dépense (argent dépensé : achat, main-d'œuvre) "
             "dans la comptabilité, éventuellement rattachée à un chantier. Ne calcule aucun total : FOX le fait. "
@@ -231,6 +235,7 @@ def register_finance_tools():
     ))
     register(Tool(
         name="lister_ecritures",
+        category="metier",
         description="Liste les dernières recettes et dépenses d'un mois (et éventuellement d'un chantier).",
         parameters={"type": "OBJECT", "properties": {
             "mois": {"type": "STRING", "description": "AAAA-MM (par défaut : le mois en cours)"},
@@ -241,6 +246,7 @@ def register_finance_tools():
     ))
     register(Tool(
         name="bilan",
+        category="metier",
         description="Bilan d'un mois : total des recettes, des dépenses, solde, et répartition par catégorie (éventuellement pour un seul chantier).",
         parameters={"type": "OBJECT", "properties": {
             "mois": {"type": "STRING", "description": "AAAA-MM (par défaut : le mois en cours)"},

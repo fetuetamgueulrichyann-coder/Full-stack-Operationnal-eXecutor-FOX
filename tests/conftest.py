@@ -22,6 +22,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ORCHESTRATOR_DIR = pathlib.Path(os.environ.get("ORCHESTRATOR_DIR", ROOT / "orchestrator"))
 BOT_DIR = pathlib.Path(os.environ.get("BOT_DIR", ROOT / "telegram_bot"))
 DB_DIR = pathlib.Path(os.environ.get("DB_DIR", ROOT / "db"))
+SCRIPTS_DIR = pathlib.Path(os.environ.get("SCRIPTS_DIR", ROOT / "scripts"))
 ADMIN_URL = os.environ.get("TEST_ADMIN_URL")
 
 if not ADMIN_URL:
@@ -202,7 +203,7 @@ def clean_tables():
         cur.execute(
             "TRUNCATE conversations, api_usage, pending_actions, audit_log, users, sessions, "
             "invitation_codes, auth_attempts, user_usage, provider_usage, chats, private_mode, "
-            "private_context, tasks, memories, briefing_settings, clients, quotes, quote_lines, quote_counters, business_profiles, events, projects, ledger_entries, push_subscriptions, voice_usage, voice_settings, files RESTART IDENTITY CASCADE"
+            "private_context, tasks, memories, briefing_settings, clients, quotes, quote_lines, quote_counters, business_profiles, events, projects, ledger_entries, push_subscriptions, voice_usage, voice_settings, files, privacy_settings, data_grants, held_messages RESTART IDENTITY CASCADE"
         )
     conn.close()
 

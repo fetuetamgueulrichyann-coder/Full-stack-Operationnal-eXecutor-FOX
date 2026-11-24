@@ -419,6 +419,7 @@ def register_creation_tools():
     }
     register(Tool(
         name="creer_pdf",
+        category="systeme",
         description=(
             "Crée un document PDF (lettre, rapport, fiche, compte rendu, devis rédigé…) que l'utilisateur pourra télécharger. "
             "À utiliser quand il demande un PDF ou un document à envoyer ou imprimer. Écris le contenu complet : rien ne sera ajouté."
@@ -429,6 +430,7 @@ def register_creation_tools():
     ))
     register(Tool(
         name="creer_word",
+        category="systeme",
         description=(
             "Crée un document Word (.docx) modifiable que l'utilisateur pourra télécharger. "
             "À utiliser quand il demande un fichier Word ou un texte qu'il veut retoucher lui-même."
@@ -439,6 +441,7 @@ def register_creation_tools():
     ))
     register(Tool(
         name="creer_excel",
+        category="systeme",
         description=(
             "Crée un classeur Excel (.xlsx) : budget, liste, planning, suivi de chantier… La première ligne est l'en-tête. "
             "Les formules simples (=SUM(B2:B9), =B2*C2) sont acceptées."
@@ -451,6 +454,7 @@ def register_creation_tools():
     ))
     register(Tool(
         name="creer_archive",
+        category="systeme",
         description=(
             "Regroupe en un fichier .zip des fichiers déjà présents dans la conversation (envoyés par l'utilisateur ou créés par toi). "
             "À utiliser quand il le demande, ou quand plusieurs fichiers sont à envoyer ensemble."

@@ -136,6 +136,7 @@ def fake_agenda(tools, monkeypatch, result=None, error=None, roles=("owner",)):
         return result
 
     monkeypatch.setitem(tools.REGISTRY, "lire_agenda", tools.Tool(
+        category="systeme",
         name="lire_agenda", description="", parameters=None, classification=tools.READ, run=run, roles=roles))
     return calls
 

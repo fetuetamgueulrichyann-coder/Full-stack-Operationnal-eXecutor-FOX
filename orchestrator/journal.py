@@ -43,6 +43,7 @@ EVENT_LABELS = {
     "ledger_entry_deleted": "Écriture comptable supprimée",
     "quote_pdf": "Devis exporté en PDF",
     "business_updated": "Profil d'entreprise modifié",
+    "egress": "Données envoyées à un fournisseur",
     "event_created": "Rendez-vous ajouté",
     "event_updated": "Rendez-vous modifié",
     "event_deleted": "Rendez-vous supprimé",

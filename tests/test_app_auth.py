@@ -220,6 +220,7 @@ def test_un_utilisateur_ne_peut_pas_confirmer_l_action_d_un_autre(app_client, ac
     ran = []
     tools.register(
         tools.Tool(
+        category="systeme",
             name="t_iso", description="", parameters=None, classification=tools.WRITE,
             run=lambda: ran.append(1) or {}, describe=lambda a: "Faire", done=lambda r: "Fait.",
         )

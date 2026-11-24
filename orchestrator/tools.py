@@ -1,4 +1,5 @@
 import os
+import privacy
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -76,9 +77,13 @@ class Tool:
     roles: tuple = ("owner", "tester")
     # Outil propre à un utilisateur : run(...) et describe(args, ...) reçoivent `user_id`.
     needs_user: bool = False
+    # Catégorie de données que l'outil manipule (privacy.TOOL_CATEGORIES). OBLIGATOIRE : fixée dans le code,
+    # jamais par le modèle ; elle sert à étiqueter l'échange et, plus tard, à autoriser l'envoi des données.
+    category: Optional[str] = None
 
     def execute(self, args, user_id):
         """Exécute l'outil. Un outil « needs_user » reçoit l'utilisateur, jamais fourni par le modèle."""
+        privacy.mark(self.category)  # la donnée est réellement utilisée, même si l'outil échoue ensuite
         if not self.needs_user:
             return self.run(**args)
         return self.run(**{k: v for k, v in args.items() if k != "user_id"}, user_id=user_id)
@@ -99,6 +104,8 @@ REGISTRY: dict = {}
 
 
 def register(tool: Tool) -> None:
+    if tool.category not in privacy.TOOL_CATEGORIES:
+        raise ValueError(f"l'outil {tool.name} doit déclarer une catégorie de données parmi {privacy.TOOL_CATEGORIES}")
     if tool.needs_confirmation and (tool.describe is None or tool.done is None):
         raise ValueError(f"l'outil sensible {tool.name} doit définir describe et done")
     REGISTRY[tool.name] = tool
@@ -301,6 +308,7 @@ def register_calendar_tools():
     register(
         Tool(
             name="lire_agenda",
+            category="personnel",
             description="Liste les événements de l'agenda entre deux dates.",
             parameters={
                 "type": "OBJECT",
@@ -318,6 +326,7 @@ def register_calendar_tools():
     register(
         Tool(
             name="creer_evenement",
+            category="personnel",
             description="Crée un événement dans l'agenda.",
             parameters={
                 "type": "OBJECT",
@@ -341,6 +350,7 @@ def register_calendar_tools():
     register(
         Tool(
             name="modifier_evenement",
+            category="personnel",
             description="Modifie un événement existant. Retrouver d'abord son identifiant avec lire_agenda.",
             parameters={
                 "type": "OBJECT",
@@ -364,6 +374,7 @@ def register_calendar_tools():
     register(
         Tool(
             name="supprimer_evenement",
+            category="personnel",
             description="Supprime un événement. Retrouver d'abord son identifiant avec lire_agenda.",
             parameters={
                 "type": "OBJECT",

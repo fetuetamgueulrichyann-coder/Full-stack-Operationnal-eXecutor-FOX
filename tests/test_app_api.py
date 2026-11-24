@@ -139,6 +139,7 @@ def test_confirmation_d_une_action_reelle(client, db, tools, owner, make_user):
     ran = []
     tools.register(
         tools.Tool(
+        category="systeme",
             name="t_api", description="", parameters=None, classification=tools.WRITE,
             run=lambda: ran.append(1) or {}, describe=lambda a: "Faire", done=lambda r: "Fait.",
         )

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import psycopg2
+import privacy
 from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
 
@@ -172,7 +173,7 @@ def load_history(user_id, limit, chat_id=None, with_files=False):
                 return []
         cur.execute(
             """
-            SELECT user_message, bot_reply, attachments FROM conversations
+            SELECT user_message, bot_reply, attachments, data_classes FROM conversations
             WHERE user_id = %s AND chat_id = %s
             ORDER BY created_at DESC, id DESC
             LIMIT %s
@@ -181,9 +182,15 @@ def load_history(user_id, limit, chat_id=None, with_files=False):
         )
         rows = cur.fetchall()
     rows.reverse()
+    for _, _, _, classes in rows:  # ces échanges entrent dans le contexte : ils transmettent leurs catégories
+        if classes is None:
+            privacy.mark_unknown()  # étiquette inconnue (échange d'avant la confidentialité) : sensible partout
+        else:
+            for category in classes:
+                privacy.mark(category)
     if with_files:
-        return [(u, b, a or []) for u, b, a in rows]
-    return [(_with_attachment_note(u, a), b) for u, b, a in rows]
+        return [(u, b, a or []) for u, b, a, _ in rows]
+    return [(_with_attachment_note(u, a), b) for u, b, a, _ in rows]
 
 
 def _with_attachment_note(user_message, attachments):
@@ -194,7 +201,7 @@ def _with_attachment_note(user_message, attachments):
     return f"{user_message}\n[Fichiers joints à ce message : {', '.join(names)}. Leur contenu n'est plus visible : demande à l'utilisateur de le renvoyer si besoin.]"
 
 
-def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=None, reply_files=None):
+def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=None, reply_files=None, data_classes=None, engine=None):
     """Enregistre un échange dans la conversation active (ou celle indiquée, si elle est à lui)."""
     with cursor() as cur:
         if chat_id is None:
@@ -210,10 +217,11 @@ def save_exchange(user_id, user_message, bot_reply, chat_id=None, attachments=No
             raise LookupError("conversation introuvable")
         cur.execute(
             """
-            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply, attachments, reply_files)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO conversations (user_id, chat_id, user_message, bot_reply, attachments, reply_files, data_classes, engine)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (user_id, chat_id, user_message, bot_reply, Json(attachments or []), Json(reply_files or [])),
+            (user_id, chat_id, user_message, bot_reply, Json(attachments or []), Json(reply_files or []),
+             None if data_classes is None else list(data_classes), engine),
         )
         if reply_files:  # un fichier créé et montré dans la conversation en fait partie (suppression avec elle)
             cur.execute(
@@ -370,6 +378,8 @@ def load_private_history(user_id, limit):
         )
         rows = cur.fetchall()
     rows.reverse()
+    if rows:
+        privacy.mark_unknown()  # le contexte privé n'est pas étiqueté : sensible dans toutes les catégories
     return rows
 
 
@@ -871,6 +881,7 @@ JOURNAL_AUDIT_EVENTS = (
     "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
     "client_created", "client_updated", "client_deleted", "quote_created", "quote_status", "quote_deleted",
     "quote_pdf", "business_updated", "event_created", "event_updated", "event_deleted", "timezone_set",
+    "egress",
 )
 
 

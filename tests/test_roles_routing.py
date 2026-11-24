@@ -9,16 +9,19 @@ def registry(tools):
     ran = []
     registered = {
         "t_commun": tools.Tool(
+        category="systeme",
             name="t_commun", description="pour tous", parameters=None,
             classification=tools.READ, run=lambda: ran.append("commun") or "ok",
         ),
         "t_proprio": tools.Tool(
+        category="systeme",
             name="t_proprio", description="propriétaire", parameters=None,
             classification=tools.WRITE, run=lambda: ran.append("proprio") or {"id": 1},
             describe=lambda a: "Action du propriétaire", done=lambda r: "Fait.",
             roles=("owner",),
         ),
         "t_testeur": tools.Tool(
+        category="systeme",
             name="t_testeur", description="testeur", parameters=None,
             classification=tools.READ, run=lambda: ran.append("testeur") or "ok",
             roles=("tester",),

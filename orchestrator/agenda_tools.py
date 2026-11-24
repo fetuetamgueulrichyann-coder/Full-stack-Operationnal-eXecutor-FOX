@@ -154,6 +154,7 @@ INTERNAL = "dans l'agenda interne de FOX (avec rappel Telegram avant l'heure)"
 def register_agenda_tools():
     register(Tool(
         name="lister_rdv",
+        category="personnel",
         description=f"Liste les rendez-vous {INTERNAL}.",
         parameters={"type": "OBJECT", "properties": {
             "periode": {"type": "STRING", "description": "aujourd'hui, demain, semaine (par défaut : 7 jours) ou mois"},
@@ -162,6 +163,7 @@ def register_agenda_tools():
     ))
     register(Tool(
         name="creer_rdv",
+        category="personnel",
         description=f"Ajoute un rendez-vous {INTERNAL}. Le moment doit être dans le futur.",
         parameters={"type": "OBJECT", "properties": {
             "titre": {"type": "STRING", "description": "Titre court du rendez-vous"},
@@ -174,6 +176,7 @@ def register_agenda_tools():
     ))
     register(Tool(
         name="modifier_rdv",
+        category="personnel",
         description=f"Modifie un rendez-vous {INTERNAL}. Retrouver d'abord son numéro avec lister_rdv.",
         parameters={"type": "OBJECT", "properties": {
             "rdv_id": RDV_ID,
@@ -188,6 +191,7 @@ def register_agenda_tools():
     ))
     register(Tool(
         name="supprimer_rdv",
+        category="personnel",
         description=f"Supprime un rendez-vous {INTERNAL}. Retrouver d'abord son numéro avec lister_rdv.",
         parameters={"type": "OBJECT", "properties": {
             "rdv_id": RDV_ID,

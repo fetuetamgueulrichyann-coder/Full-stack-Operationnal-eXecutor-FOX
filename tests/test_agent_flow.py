@@ -18,10 +18,12 @@ def registry(agent, tools):
 
     registered = {
         "t_lecture": tools.Tool(
+        category="systeme",
             name="t_lecture", description="lecture", parameters=None,
             classification=tools.READ, run=lecture,
         ),
         "t_ecriture": tools.Tool(
+        category="systeme",
             name="t_ecriture", description="écriture", parameters=None,
             classification=tools.WRITE, run=ecriture,
             describe=lambda args: f"Créer {args['titre']}",
@@ -29,6 +31,7 @@ def registry(agent, tools):
             undo=lambda args, result: ran["annulation"].append(result["id"]),
         ),
         "t_echec": tools.Tool(
+        category="systeme",
             name="t_echec", description="échoue", parameters=None,
             classification=tools.WRITE, run=lambda: (_ for _ in ()).throw(RuntimeError("panne")),
             describe=lambda args: "Échouer", done=lambda r: "?",

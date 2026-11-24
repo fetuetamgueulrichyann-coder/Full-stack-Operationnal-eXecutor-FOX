@@ -1,0 +1,13 @@
+-- Export des données de confidentialité AVANT tout retour arrière de la migration 022.
+-- Fichier de commandes psql (meta-commandes \copy, côté client) : il n'est PAS du SQL pur.
+-- À lancer avec psql, jamais par le lanceur de migrations. Voir docs/RETOUR_ARRIERE_022.md.
+--
+--   docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -f /scripts/privacy_022_export.psql'
+--
+-- Les fichiers CSV sont écrits dans /backups (dossier « backups » du projet sur ton disque).
+\set ON_ERROR_STOP on
+\copy (SELECT * FROM privacy_settings ORDER BY user_id) TO '/backups/privacy_settings_022.csv' WITH (FORMAT csv, HEADER true)
+\copy (SELECT * FROM data_grants ORDER BY id) TO '/backups/data_grants_022.csv' WITH (FORMAT csv, HEADER true)
+\copy (SELECT id, user_id, chat_id, operation_id, created_at, expires_at FROM held_messages ORDER BY id) TO '/backups/held_messages_022.csv' WITH (FORMAT csv, HEADER true)
+\copy (SELECT id, user_id, chat_id, data_classes, engine FROM conversations WHERE data_classes IS NOT NULL OR engine IS NOT NULL ORDER BY id) TO '/backups/conversations_classes_022.csv' WITH (FORMAT csv, HEADER true)
+\echo Export terminé : vérifie la présence des quatre fichiers *_022.csv dans le dossier backups.

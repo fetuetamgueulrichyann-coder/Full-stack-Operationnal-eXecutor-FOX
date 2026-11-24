@@ -11,6 +11,7 @@ def test_les_outils_google_ne_sont_pas_enregistres_sans_identifiants(tools):
 
 def test_outil_sensible_exige_description_et_confirmation(tools):
     sensible = tools.Tool(
+        category="systeme",
         name="x", description="x", parameters=None, classification=tools.WRITE, run=lambda: 1
     )
     with pytest.raises(ValueError):
@@ -19,10 +20,12 @@ def test_outil_sensible_exige_description_et_confirmation(tools):
 
 def test_classification_et_confirmation(tools):
     lecture = tools.Tool(
+        category="systeme",
         name="l", description="", parameters=None, classification=tools.READ, run=lambda: 1
     )
     assert lecture.needs_confirmation is False
     ecriture = tools.Tool(
+        category="systeme",
         name="e", description="", parameters=None, classification=tools.IRREVERSIBLE, run=lambda: 1
     )
     assert ecriture.needs_confirmation is True
