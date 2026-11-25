@@ -65,6 +65,15 @@ export function Register() {
           onChange={(e) => setPassword(e.target.value)}
           required
         />
+        <div className="pv-signup" role="note" aria-label="Information sur vos données">
+          <strong>Vos messages passent par des services extérieurs</strong>
+          <p>
+            Pour répondre, FOX peut envoyer le contenu de vos messages à un fournisseur d'IA externe (Groq pour les comptes de test).
+            Après connexion, vous trouverez dans Réglages un niveau de confidentialité à choisir. Les niveaux sont en cours de
+            déploiement et ne sont pas encore appliqués. Lire cette information est facultatif : elle ne conditionne pas la création
+            de votre compte et ne vaut pas autorisation d'envoi.
+          </p>
+        </div>
         <button type="submit" className="primary" disabled={busy}>
           {busy ? "Création…" : "Créer mon compte"}
           {!busy && <Icon name="arrow" />}

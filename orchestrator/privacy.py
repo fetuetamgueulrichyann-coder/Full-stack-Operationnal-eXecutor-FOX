@@ -34,6 +34,42 @@ HELD_MESSAGE_TTL = timedelta(minutes=10)
 
 ALLOWED, NEEDS_GRANT, BLOCKED = "allowed", "needs_grant", "blocked"
 
+# Les niveaux ne contrôlent PAS encore les envois : la passerelle (egress.py) n'est pas branchée. Cette constante
+# passe à True en phase 1c, quand l'application des niveaux est réellement en place. Tant qu'elle est fausse,
+# l'interface et l'API doivent le dire clairement et ne jamais présenter un niveau comme déjà opérationnel.
+ENFORCEMENT_ACTIVE = False
+
+# Version du texte d'information à lire. L'enregistrer ne vaut PAS autorisation d'envoi.
+CONSENT_VERSION = 1
+
+# Description des niveaux. Écrite au conditionnel tant que ENFORCEMENT_ACTIVE est fausse.
+LEVEL_INFO = {
+    PROTEGE: {
+        "label": "Protégé",
+        "summary": "Quand ce niveau sera appliqué : chaque envoi de données à un fournisseur externe demandera ton "
+                   "autorisation. C'est le niveau par défaut.",
+    },
+    STANDARD: {
+        "label": "Standard",
+        "summary": "Quand ce niveau sera appliqué : ton texte et tes données personnelles (agenda, tâches, mémoire) "
+                   "pourront partir sans autorisation une fois l'information lue ; les données métier, les fichiers "
+                   "et la voix demanderont toujours ton autorisation.",
+    },
+    STRICT: {
+        "label": "Strict",
+        "summary": "Quand ce niveau sera appliqué : plus rien ne partira chez un fournisseur externe ; FOX ne "
+                   "répondra qu'avec ses règles locales.",
+    },
+}
+
+
+def level_label(level):
+    """Libellé affichable. Strict est signalé « pas encore actif » tant que les niveaux ne sont pas appliqués."""
+    label = LEVEL_INFO[level]["label"]
+    if level == STRICT and not ENFORCEMENT_ACTIVE:
+        label += " (pas encore actif)"
+    return label
+
 # Catégories envoyées sans autorisation en niveau Standard, une fois le consentement enregistré.
 STANDARD_OPEN = (TEXTE_LIBRE, PERSONNEL)
 

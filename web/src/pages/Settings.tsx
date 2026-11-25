@@ -5,6 +5,7 @@ import type { BriefingSettings, Business, TimezoneInfo } from "../api/types";
 import { Markdown } from "../components/Markdown";
 import { AppearanceCard } from "../components/AppearanceCard";
 import { NotificationsCard } from "../components/NotificationsCard";
+import { PrivacyCard } from "../components/PrivacyCard";
 import { VoiceCard } from "../components/VoiceCard";
 import { useAuth } from "../auth/AuthContext";
 import { timeOf } from "../lib/dates";
@@ -127,6 +128,7 @@ export function Settings() {
         </section>
 
         <NotificationsCard />
+        <PrivacyCard />
         <VoiceCard />
 
         <section className="card" aria-label="Briefing du matin">

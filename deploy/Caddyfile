@@ -14,8 +14,8 @@
 		Referrer-Policy strict-origin-when-cross-origin
 		# Le micro n'est autorisé que pour FOX lui-même (dictée vocale) ; caméra et position jamais.
 		Permissions-Policy "microphone=(self), camera=(self), geolocation=(), payment=()"
-		# Seul FOX peut charger du code et des données ; les polices viennent de Google Fonts.
-		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+		# Seul FOX peut charger du code et des données ; les polices sont servies par FOX lui-même (aucune requête vers Google).
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
 		# Une fois le HTTPS validé sur le VPS, activer :
 		# Strict-Transport-Security "max-age=31536000"
 	}

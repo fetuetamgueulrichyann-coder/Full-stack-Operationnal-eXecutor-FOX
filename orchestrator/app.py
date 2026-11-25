@@ -22,6 +22,7 @@ import mail
 import memory
 import privacy
 import privacy_store
+import providers
 import agenda
 import commercial
 import finance
@@ -1418,6 +1419,134 @@ def ledger_delete(entry_id):
         return jsonify(error="écriture introuvable"), 404
     db.audit(user["id"], "ledger_entry_deleted", None, {"entry_id": entry_id})
     return jsonify(status="deleted")
+
+
+# --- Confidentialité (phase 1b : réglages et information ; les niveaux ne contrôlent pas encore les envois) ----
+def privacy_providers_for(role):
+    return [
+        dict(id=p.name, label=p.label, kind=p.kind, retention=providers.retention_note(p.name), available=role in p.roles)
+        for p in providers.PROVIDERS.values()
+    ]
+
+
+def privacy_payload(user):
+    saved = privacy_store.get_settings(user["id"])
+    llm = [p for p in privacy_providers_for(user["role"]) if p["kind"] == providers.LLM and p["available"]]
+    return dict(
+        enforcement_active=privacy.ENFORCEMENT_ACTIVE,
+        enforcement_notice=None if privacy.ENFORCEMENT_ACTIVE else (
+            "Les niveaux sont enregistrés mais pas encore appliqués. Pour l'instant, FOX envoie tes messages à "
+            "Gemini (propriétaire) ou à Groq (testeurs) comme avant, quel que soit le niveau. L'application arrive "
+            "avec la phase 1c."
+        ),
+        level=saved["level"],
+        levels=[
+            dict(id=level, label=privacy.level_label(level), summary=privacy.LEVEL_INFO[level]["summary"], applied=privacy.ENFORCEMENT_ACTIVE)
+            for level in (privacy.PROTEGE, privacy.STANDARD, privacy.STRICT)
+        ],
+        default_level=privacy.DEFAULT_LEVEL,
+        preferred_provider=saved["preferred_provider"],
+        provider_choices=[dict(id=p["id"], label=p["label"]) for p in llm],
+        notification_detail=saved["notification_detail"],
+        consent=dict(
+            current_version=privacy.CONSENT_VERSION, version=saved["consent_version"],
+            at=saved["consent_at"].isoformat() if saved["consent_at"] else None,
+            read=saved["consent_version"] == privacy.CONSENT_VERSION,
+            notice="Lire cette information ne t'engage à rien et ne constitue pas une autorisation d'envoi de données.",
+        ),
+        block_all=privacy.block_all(),
+    )
+
+
+def privacy_web_only(user):
+    """Les réglages de confidentialité ne se changent que depuis le site (session + origine), jamais par le bot."""
+    if request.headers.get("X-Fox-Service-Token") is not None:
+        return jsonify(error="Ce réglage se change depuis le site de FOX, pas depuis Telegram."), 403
+    return None
+
+
+@app.get("/privacy/settings")
+def privacy_settings_get():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(privacy_payload(user))
+
+
+@app.post("/privacy/settings")
+def privacy_settings_set():
+    """Niveau, fournisseur préféré, détail des notifications. Enregistre seulement : rien n'est encore appliqué."""
+    data = body()
+    user, error = authenticate(data)
+    if error:
+        return error
+    if refused := privacy_web_only(user):
+        return refused
+    changes = {}
+    if "level" in data:
+        if data["level"] not in privacy.LEVELS:
+            return jsonify(error="niveau inconnu"), 400
+        changes["level"] = data["level"]
+    if "preferred_provider" in data:
+        choice = data["preferred_provider"]
+        if choice in (None, ""):
+            changes["preferred_provider"] = None
+        elif isinstance(choice, str) and providers.allowed_for_role(choice, user["role"]) and providers.get(choice).kind == providers.LLM:
+            changes["preferred_provider"] = choice
+        else:
+            return jsonify(error="fournisseur indisponible pour ce compte"), 400
+    if "notification_detail" in data:
+        if data["notification_detail"] not in privacy.NOTIFICATION_DETAILS:
+            return jsonify(error="détail de notification inconnu"), 400
+        changes["notification_detail"] = data["notification_detail"]
+    if not changes:
+        return jsonify(error="aucun réglage à modifier"), 400
+    privacy_store.save_settings(user["id"], **changes)
+    db.audit(user["id"], "privacy_settings", None, changes)
+    return jsonify(privacy_payload(user))
+
+
+@app.post("/privacy/consent")
+def privacy_consent():
+    """Enregistre que l'information (version et date) a été lue. Ne bloque rien et n'autorise aucun envoi."""
+    data = body()
+    user, error = authenticate(data)
+    if error:
+        return error
+    if refused := privacy_web_only(user):
+        return refused
+    if data.get("version") != privacy.CONSENT_VERSION or isinstance(data.get("version"), bool):
+        return jsonify(error="version de l'information inconnue", current_version=privacy.CONSENT_VERSION), 400
+    privacy_store.record_consent(user["id"], privacy.CONSENT_VERSION)
+    db.audit(user["id"], "privacy_consent", None, {"version": privacy.CONSENT_VERSION})
+    return jsonify(privacy_payload(user))
+
+
+@app.get("/privacy/info")
+def privacy_info():
+    user, error = chat_auth()
+    if error:
+        return error
+    return jsonify(
+        enforcement_active=privacy.ENFORCEMENT_ACTIVE,
+        providers=privacy_providers_for(user["role"]),
+        declared=dict(
+            gemini_tier=providers.gemini_tier(), groq_zdr=providers.groq_zdr_verified(),
+            note="Ces garanties sont celles déclarées dans la configuration de ce serveur par son administrateur.",
+        ),
+        tracking=dict(
+            active=False,
+            notice="Le suivi des envois commence avec la phase 1c. Les envois ne sont pas encore tracés : FOX envoie "
+                   "tes messages aux fournisseurs comme avant, sans en garder la liste ici.",
+        ),
+        categories=[
+            dict(id="texte_libre", label="Ce que tu écris ou dis"),
+            dict(id="personnel", label="Agenda, tâches, rappels, mémoire"),
+            dict(id="metier", label="Clients, devis, chantiers, comptabilité"),
+            dict(id="fichier", label="Contenu des fichiers joints"),
+            dict(id="voix", label="Texte lu à voix haute par un service de synthèse"),
+        ],
+    )
 
 
 # --- Notifications push (rappels hors onglet) -------------------------------------------------

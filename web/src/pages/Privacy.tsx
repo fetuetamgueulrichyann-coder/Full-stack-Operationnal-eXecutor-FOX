@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api } from "../api/client";
 import { describeError } from "../api/errors";
 import type { ChatsResponse, JournalEntry, MemoryItem } from "../api/types";
+import { Link } from "react-router-dom";
 import { dayKey, shortDate, timeOf } from "../lib/dates";
 
 export function Privacy() {
@@ -70,6 +71,11 @@ export function Privacy() {
       </header>
       {error && <div className="banner error" role="alert">{error}</div>}
       {notice && <div className="banner info" role="status">{notice}</div>}
+
+      <Link className="pv-banner-link" to="/confidentialite">
+        <span>Niveaux de protection, fournisseurs et notifications : page Confidentialité</span>
+        <span aria-hidden="true">→</span>
+      </Link>
 
       <div className="card-grid">
         <section className="card" aria-label="Mode privé">

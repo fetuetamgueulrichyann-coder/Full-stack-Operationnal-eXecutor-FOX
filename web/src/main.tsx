@@ -3,7 +3,9 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { applyTheme, readTheme, watchSystemTheme } from "./lib/theme";
+import "./fonts.css";
 import "./styles.css";
+import "./privacy.css";
 
 applyTheme(readTheme());
 watchSystemTheme();

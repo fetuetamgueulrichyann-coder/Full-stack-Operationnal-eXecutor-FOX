@@ -63,7 +63,7 @@ def retention_note(name):
     """Phrase honnête sur la conservation chez le fournisseur, selon la réalité déclarée."""
     if name == "groq":
         if groq_zdr_verified():
-            return "Conservation zéro des échanges activée sur le compte."
+            return "Conservation zéro des échanges activée sur le compte. Des métadonnées d'utilisation sans contenu restent collectées."
         return "Des journaux techniques peuvent être conservés jusqu'à 30 jours."
     if name == "gemini":
         if gemini_tier() == "paid":

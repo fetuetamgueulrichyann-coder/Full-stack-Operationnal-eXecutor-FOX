@@ -37,6 +37,10 @@ services:
       LLM_BACKOFF_BASE: ${LLM_BACKOFF_BASE:-1.0}
       LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-20}
       GEMINI_FALLBACK_MODEL: ${GEMINI_FALLBACK_MODEL:-}
+      # Confidentialité : ce que tu as VÉRIFIÉ chez les fournisseurs (affiché tel quel) et l'interrupteur d'urgence.
+      GEMINI_TIER: ${GEMINI_TIER:-}
+      GROQ_ZDR: ${GROQ_ZDR:-}
+      PRIVACY_BLOCK_ALL: ${PRIVACY_BLOCK_ALL:-}
       HISTORY_MAX_CHARS: ${HISTORY_MAX_CHARS:-1200}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}

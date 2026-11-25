@@ -242,3 +242,36 @@ export interface VoiceConfig {
   daily_limit: number;
   used: number;
 }
+
+/** Réglages de confidentialité (GET/POST /privacy/settings, POST /privacy/consent). Voir docs/API.md. */
+export type PrivacyLevelId = "standard" | "protege" | "strict";
+export type NotificationDetail = "discret" | "complet";
+
+export interface PrivacyLevel {
+  id: PrivacyLevelId;
+  label: string;
+  summary: string;
+  applied: boolean;
+}
+
+export interface PrivacySettings {
+  enforcement_active: boolean;
+  enforcement_notice: string | null;
+  level: PrivacyLevelId;
+  levels: PrivacyLevel[];
+  default_level: PrivacyLevelId;
+  preferred_provider: string | null;
+  provider_choices: { id: string; label: string }[];
+  notification_detail: NotificationDetail;
+  consent: { current_version: number; version: number | null; at: string | null; read: boolean; notice: string };
+  block_all: boolean;
+}
+
+/** GET /privacy/info : fournisseurs, garanties déclarées, suivi des envois, catégories de données. */
+export interface PrivacyInfo {
+  enforcement_active: boolean;
+  providers: { id: string; label: string; kind: string; retention: string; available: boolean }[];
+  declared: { gemini_tier: string; groq_zdr: boolean; note: string };
+  tracking: { active: boolean; notice: string };
+  categories: { id: string; label: string }[];
+}

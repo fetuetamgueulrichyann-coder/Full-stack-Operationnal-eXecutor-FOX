@@ -44,6 +44,8 @@ EVENT_LABELS = {
     "quote_pdf": "Devis exporté en PDF",
     "business_updated": "Profil d'entreprise modifié",
     "egress": "Données envoyées à un fournisseur",
+    "privacy_settings": "Réglage de confidentialité modifié",
+    "privacy_consent": "Information de confidentialité lue",
     "event_created": "Rendez-vous ajouté",
     "event_updated": "Rendez-vous modifié",
     "event_deleted": "Rendez-vous supprimé",

@@ -2,7 +2,8 @@
 
 Objectif : que rien de ce qui touche à tes données ne parte chez un fournisseur externe (Gemini, Groq, synthèse
 vocale…) sans une règle claire, ton accord quand il le faut, et une trace sans contenu. Ce document décrit l'état
-**après la phase 1a**.
+**après la phase 1b**. Les niveaux se choisissent et s'enregistrent, mais ne contrôlent
+**pas encore** les envois : c'est la phase 1c.
 
 ## Phase 1a : fondations, sans changement de comportement
 
@@ -71,7 +72,59 @@ du navigateur ou texte seul, jamais de bascule automatique vers un autre fournis
   la Suisse ou du Royaume-Uni. Offre gratuite : contenus pouvant servir à améliorer les produits Google, relecture humaine
   possible, sans opposition. `GEMINI_TIER=paid` n'est à positionner que si c'est vrai.
 - Groq : pas de conservation des échanges par défaut, journaux techniques jusqu'à 30 jours. `GROQ_ZDR=1` seulement
-  après vérification dans ta console ; il n'est **pas** configuré.
+  après vérification dans ta console (Settings > Data Controls > « Inference APIs ZDR » activé). Sans `GROQ_ZDR=1` dans
+  `.env`, FOX affiche la mention prudente « journaux jusqu'à 30 jours ». Ce que FOX affiche vient de cette déclaration :
+  il ne peut pas la vérifier lui-même.
+
+## Phase 1b : réglages, information et notifications discrètes
+
+La 1b rend la confidentialité **visible et réglable**, sans rien appliquer. `ENFORCEMENT_ACTIVE` reste `False` (il passe à
+`True` en 1c) : tant qu'il est faux, tout l'écran le dit (bandeau permanent « Protections pas encore appliquées »), Strict
+s'affiche « (pas encore actif) » et chaque résumé de niveau commence par « Quand ce niveau sera appliqué ».
+
+| Élément | Comportement en 1b |
+|---|---|
+| Réglages > Confidentialité | niveau (Protégé par défaut), fournisseur préféré, détail des notifications, information lue |
+| Page `/confidentialite` | les trois niveaux, les fournisseurs et leur conservation réelle, les types de données, le suivi prévu en 1c |
+| `/prive` | inchangée, avec un lien vers la page Confidentialité |
+| Inscription | encadré d'information ; rien d'obligatoire, aucune case |
+| `GET/POST /privacy/settings`, `POST /privacy/consent`, `GET /privacy/info` | voir `API.md` ; les changements ne passent que par une session web (refusés depuis le bot Telegram) |
+| Audit | événements `privacy_settings` et `privacy_consent` (journal sans contenu) |
+
+Règles de la 1b :
+
+- **Le consentement n'autorise rien.** Il enregistre une version et une date de lecture, ne bloque pas FOX et n'est pas une
+  autorisation d'envoi. Le sens que lui donne Standard (envoi libre du texte et du personnel) n'existe qu'à partir de la 1c.
+- **Le fournisseur préféré est seulement enregistré.** Un testeur ne peut choisir que Groq ; le propriétaire, Gemini ou Groq.
+  FOX ne s'en sert pas avant la 1c.
+- **Pas de liste des envois.** Le suivi commence en 1c ; l'écran dit que les envois ne sont pas encore tracés.
+- **L'écran ne garantit rien de plus que le serveur.** Les textes de niveaux et de fournisseurs viennent de l'API ; la
+  conservation affichée suit `GEMINI_TIER` et `GROQ_ZDR`, déclarés par l'administrateur. Quand `enforcement_active` passera à
+  vrai, le bandeau disparaît de lui-même.
+- **Les affichages de l'application ne déclenchent aucun envoi externe** : lire ou changer un réglage n'appelle aucun fournisseur.
+
+### Notifications discrètes
+
+Par défaut, pour tout le monde (propriétaire compris), une notification de rappel affiche seulement « Rappel FOX » et
+« Touche pour ouvrir FOX. » ; toucher ouvre la bonne page (agenda ou tâches). **Le contenu n'est pas construit** en mode
+discret : le titre, le lieu et les tâches ne sont pas lus pour la notification, donc rien n'est transmis au service de
+notification du navigateur (Google, Apple, Mozilla). Le mode « complet » (choisi par l'utilisateur) rétablit les détails.
+
+- Le réglage est relu à chaque envoi (`push_delivery.detail_for`) ; sans réglage enregistré, erreur de lecture ou valeur
+  inconnue : **discret**. Chaque utilisateur a son propre réglage.
+- Limite connue : les rappels envoyés par **Telegram** affichent encore le titre. Prévu en 1d.
+- La notification de test (« Les notifications fonctionnent. ») ne contient aucune donnée de l'utilisateur.
+
+### Polices locales
+
+Manrope (500, 600, 700, 800) et JetBrains Mono (500, 700) viennent des paquets `@fontsource/*` en version exacte 5.3.0
+(licence SIL OFL 1.1, textes dans `web/public/licences/`). FOX ne charge plus Google Fonts : `index.html` n'y fait plus
+appel et la CSP de `deploy/Caddyfile` n'autorise plus `fonts.googleapis.com` ni `fonts.gstatic.com`. Ainsi, ouvrir FOX
+n'envoie plus l'adresse IP de l'utilisateur à Google.
+
+### Pas de nouvelle migration
+
+La 1b ne change pas la base : la migration `022` de la 1a suffit (`python migrate.py --status` doit rester à 22).
 
 ## Test d'architecture et liste blanche temporaire
 

@@ -174,6 +174,10 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `POST /push/subscribe` 🔒✍️ | `endpoint`, `keys: {p256dh, auth}` (l'abonnement du navigateur) | `201 {status, devices}` ; `400` si l'adresse n'est pas celle d'un service de push connu (HTTPS) ; `409` si non configuré ou limite (`MAX_PUSH_DEVICES`) atteinte. |
 | `POST /push/unsubscribe` 🔒✍️ | `endpoint` | `{status, devices}` (ne retire que les appareils de l'utilisateur). |
 | `POST /push/test` 🔒✍️ | | `{sent}` : envoie une notification de test à ses appareils ; `404` s'il n'en a aucun. |
+
+Les notifications de rappel suivent le réglage `notification_detail` (`GET /privacy/settings`) : en `discret` (défaut), la charge
+envoyée au service de notification ne contient que « Rappel FOX », « Touche pour ouvrir FOX. » et la page à ouvrir ; en `complet`,
+elle contient le titre, le lieu et les détails. Sans réglage ou valeur inconnue : `discret`.
 | `POST /files` 🔒✍️ | Formulaire `multipart/form-data`, champ `file` (un fichier par requête). Photos (JPEG, PNG, WebP, GIF), PDF, Word (.docx), Excel (.xlsx), texte, archives .zip et .tar.gz ; 10 Mo au plus (`FILE_MAX_MB`) | `201 {file: {id, name, kind, size}}`. Le type vient du contenu, jamais du nom. `400` vide, abîmé ou archive refusée (`file_empty`, `file_corrupt`, `file_archive`) ; `413` trop gros ; `415` type non pris en charge ; `429` `file_storage_full` (200 Mo pour le propriétaire, 30 Mo pour un testeur). Un fichier jamais joint à un message est supprimé après 2 h. |
 | `GET /files/<id>` 🔒 | | Le fichier (ses propres fichiers seulement) : image affichée dans la page, le reste en téléchargement (`nosniff`, CSP `sandbox`). `404` sinon. |
 | `DELETE /files/<id>` 🔒✍️ | | Retire un fichier pas encore joint à un message (`404` s'il est déjà joint ou n'est pas à lui). |
@@ -198,6 +202,10 @@ renvoie `pending`, l'interface affiche une carte « Action en attente » avec Co
 | `POST /briefing` 🔒✍️ | `enabled` (booléen) et/ou `time` (« 07:30 ») | `{enabled, time}` mis à jour |
 | `GET /briefing/preview` 🔒 | | `{text}` : le briefing du jour, tel qu'il serait envoyé |
 | `POST /briefings/claim` 🤖 | | Briefings dus (bot). |
+| `GET /privacy/settings` 🔒 | | `{enforcement_active, enforcement_notice, level, levels, default_level, preferred_provider, provider_choices, notification_detail, consent, block_all}`. **`enforcement_active` est faux en phase 1b** : les niveaux sont enregistrés mais ne contrôlent pas encore les envois. |
+| `POST /privacy/settings` 🔒✍️ | `level` (`protege`, `standard`, `strict`) et/ou `preferred_provider` (`gemini`, `groq` ou `null`) et/ou `notification_detail` (`discret`, `complet`) | Les réglages mis à jour (même forme que le `GET`). `400` si valeur inconnue ou fournisseur indisponible pour le compte (un testeur n'a que Groq) ; `403` depuis le bot Telegram (le réglage se change depuis le site). |
+| `POST /privacy/consent` 🔒✍️ | `version` (la version courante, entier) | Les réglages mis à jour. Enregistre version et date de lecture ; ne bloque rien et **n'autorise aucun envoi**. `403` depuis le bot. |
+| `GET /privacy/info` 🔒 | | `{enforcement_active, providers, declared, tracking, categories}` : fournisseurs et ce qu'ils conservent, garanties déclarées par le serveur (`GEMINI_TIER`, `GROQ_ZDR`), et mention que le suivi des envois commence en phase 1c. |
 | `POST /reminders/claim` 🤖 | | Rappels de tâches dus (bot). |
 
 ### E-mails

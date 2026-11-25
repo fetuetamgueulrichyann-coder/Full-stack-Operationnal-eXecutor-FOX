@@ -4,6 +4,7 @@ import { BootScreen } from "./components/BootScreen";
 import { Shell } from "./components/Shell";
 import { Agenda } from "./pages/Agenda";
 import { Chat } from "./pages/Chat";
+import { Confidentialite } from "./pages/Confidentialite";
 import { Login } from "./pages/Login";
 import { Privacy } from "./pages/Privacy";
 import { Quotes } from "./pages/Quotes";
@@ -45,6 +46,7 @@ export function AppRoutes() {
           <Route path="/devis" element={<Quotes />} />
           <Route path="/chantiers" element={<Sites />} />
           <Route path="/prive" element={<Privacy />} />
+          <Route path="/confidentialite" element={<Confidentialite />} />
           <Route path="/reglages" element={<Settings />} />
         </Route>
       </Route>

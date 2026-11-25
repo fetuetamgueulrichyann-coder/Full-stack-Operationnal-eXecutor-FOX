@@ -29,6 +29,10 @@ const PATHS = {
   sun: "M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4",
   moon: "M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z",
   contrast: "M12 3v18",
+  check: "M5 12.5l4.5 4.5L19 7.5",
+  info: "M12 11v5M12 8v.01",
+  bell: "M6 17v-6a6 6 0 0 1 12 0v6l1.5 2h-15zM10 21h4",
+  chevron: "M6 9l6 6 6-6",
 } as const;
 
 export type IconName = keyof typeof PATHS;
@@ -54,6 +58,7 @@ export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
       {name === "sun" && <circle cx="12" cy="12" r="4" />}
       {name === "contrast" && <circle cx="12" cy="12" r="9" />}
       {name === "alert" && <circle cx="12" cy="12" r="9" />}
+      {name === "info" && <circle cx="12" cy="12" r="9" />}
     </svg>
   );
 }

@@ -881,7 +881,7 @@ JOURNAL_AUDIT_EVENTS = (
     "memory_cleared", "chat_deleted", "history_deleted", "mail_draft", "mail_improve", "mail_summary",
     "client_created", "client_updated", "client_deleted", "quote_created", "quote_status", "quote_deleted",
     "quote_pdf", "business_updated", "event_created", "event_updated", "event_deleted", "timezone_set",
-    "egress",
+    "egress", "privacy_settings", "privacy_consent",
 )
 
 
